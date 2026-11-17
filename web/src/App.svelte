@@ -21,15 +21,12 @@
     connectE87,
     disconnectE87,
     writeFileE87,
-    stopBrowseE87,
     getScreenInfoE87,
     getBrightnessE87,
     setLanguageE87,
     type E87Connection,
     type E87Language,
     type UploadMode,
-    type E87SmallFileEntry,
-    type E87FileBrowseEntry,
   } from './lib/e87-protocol'
   import { createDeviceOps } from './lib/device-ops'
   import { buildMjpgAvi, sanitizeJpegForBadge } from './avi-builder'
@@ -52,6 +49,7 @@
   import AviPlayer from './lib/AviPlayer.svelte'
   import AuraCastLogo3D from './lib/AuraCastLogo3D.svelte'
   import UploadProgress from './lib/UploadProgress.svelte'
+  import BadgeManager from './lib/BadgeManager.svelte'
   import PatternMode from './lib/PatternMode.svelte'
   import { generatePatternInWorker, PatternCancelledError } from './lib/pattern-worker-client'
   import LiveTransformCanvas from './lib/LiveTransformCanvas.svelte'
@@ -273,10 +271,7 @@
   })
 
   let isDeviceOpsBusy = $state(false)
-  let smallFiles: E87SmallFileEntry[] = $state([])
-  let browseEntries: E87FileBrowseEntry[] = $state([])
-  let selectedSmallFileKey = $state('')
-  let smallFileReadText = $state('')
+  let badgeOpen = $state(false)
   let rcspInfoText = $state('')
 
   let logs: string[] = $state([])
@@ -595,6 +590,13 @@
 
   // ─── Connection ───
 
+  async function rememberedBadge(): Promise<BluetoothDevice | null> {
+    try {
+      const devices = await navigator.bluetooth.getDevices?.()
+      return devices?.find((d) => /^(E87|E01|E92|L8|X9|LED Badge)/.test(d.name ?? '')) ?? null
+    } catch { return null }
+  }
+
   async function connect(): Promise<void> {
     if (!hasWebBluetooth) {
       // HTTP fallback: the Python relay answers /api/status.
@@ -618,8 +620,18 @@
     }
     isConnecting = true
     try {
-      status = 'Requesting device…'
-      const nextConn = await connectE87(log)
+      // Reconnect to a badge Chrome already granted, without the picker.
+      // Falls back to the picker if it's asleep or out of range.
+      let nextConn: E87Connection | null = null
+      const remembered = await rememberedBadge()
+      if (remembered) {
+        status = `Reconnecting to ${remembered.name ?? 'badge'}…`
+        try { nextConn = await connectE87(log, remembered) } catch (e) { log(`Remembered badge unavailable: ${(e as Error).message}`) }
+      }
+      if (!nextConn) {
+        status = 'Requesting device…'
+        nextConn = await connectE87(log)
+      }
       batteryLevel = nextConn.batteryLevel
       batteryUpdatedAt = nextConn.batteryUpdatedAt
       batteryCharging = nextConn.batteryCharging
@@ -686,20 +698,10 @@
     status = 'Disconnected'
     progress = 0
     progressLabel = ''
-    smallFiles = []
-    browseEntries = []
-    selectedSmallFileKey = ''
-    smallFileReadText = ''
     log('Disconnected.')
   }
 
   // ─── Device utility actions ───
-
-  function getSelectedSmallFile(): E87SmallFileEntry | null {
-    if (!selectedSmallFileKey) return null
-    const key = selectedSmallFileKey
-    return smallFiles.find((f) => `${f.type}:${f.id}` === key) ?? null
-  }
 
   const deviceOps = createDeviceOps({
     log,
@@ -707,26 +709,16 @@
     setBusy: (b) => { isDeviceOpsBusy = b },
     setBattery: (lvl, at, chg) => { batteryLevel = lvl; batteryUpdatedAt = at; batteryCharging = chg },
     setBrightnessLevel: (n) => { brightnessLevel = n },
-    setSmallFiles: (files) => { smallFiles = files },
-    setSelectedSmallFileKey: (key) => { selectedSmallFileKey = key },
-    setSmallFileReadText: (text) => { smallFileReadText = text },
-    setBrowseEntries: (entries) => { browseEntries = entries },
     setRcspInfoText: (text) => { rcspInfoText = text },
     applyScreenInfo,
     getConnection: () => conn,
-    getSelectedSmallFile,
-    getSmallFiles: () => smallFiles,
   })
 
   const {
     refreshBattery,
     getBrightness,
     setBrightness,
-    listSmallFiles,
-    browseFiles,
     queryScreenInfo,
-    readSelectedSmallFile,
-    deleteSelectedSmallFile,
     getTargetFeatureMap,
     getTargetInfo,
     getSysInfo,
@@ -2084,6 +2076,9 @@
           {/if}
         </div>
       {/if}
+      {#if hasWebBluetooth}
+        <M3IconButton icon="sd_storage" ariaLabel="My badge: files and clock" disabled={!conn?.server?.connected} onclick={() => badgeOpen = true} />
+      {/if}
       {#if (conn?.server?.connected || httpConn)}
         <M3IconButton icon="link_off" ariaLabel="Disconnect" disabled={isWriting} onclick={disconnect} />
       {:else}
@@ -2573,6 +2568,10 @@
         </div>
 
         <!-- ═══ M3 Help dialog ═══ -->
+        <M3Dialog bind:open={badgeOpen} headline="My badge">
+          <BadgeManager conn={conn?.server?.connected ? conn : null} run={deviceOps.run} {log} setStatus={(s) => { status = s }} disabled={isWriting} />
+        </M3Dialog>
+
         <M3Dialog bind:open={helpOpen} headline="Help & troubleshooting">
           <div class="flex flex-col gap-3">
             <div class="flex flex-wrap gap-2">

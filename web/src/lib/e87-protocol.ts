@@ -7,10 +7,16 @@
 
 import { getRandomAuthData, getEncryptedAuthData } from '../jl-auth'
 import { sleep, toHex, hexToBytes, crc16xmodem, formatBytes } from './utils'
+import { u32be, readU32BE, concatBytes, fileBrowseParam, parseFileStructs, firstJpeg, qixTimeFrame } from './badge-codec'
+export { fileBrowseParam, parseFileStructs, firstJpeg, qixTimeFrame }
 
 // ─── Constants ───
 
 export const E87_DATA_CHUNK_SIZE = 490
+
+// Device-initiated commands kept on the queue after auto-ack: upload (0x20, 0x1C, 0x1D)
+// plus file browse/read streams (DATA 0x01, browse stop 0x0D, read-back 0x24).
+const QUEUED_DEVICE_CMDS = new Set([0x20, 0x1c, 0x1d, 0x01, 0x0d, 0x24])
 
 const SERVICE_CANDIDATES: BluetoothServiceUUID[] = [
   0xae00,
@@ -289,27 +295,6 @@ export interface E87BatteryReading {
   charging: boolean
 }
 
-export interface E87SmallFileEntry {
-  type: number
-  typeName: string
-  id: number
-  size: number
-}
-
-export interface E87SmallFileReadResult {
-  entry: E87SmallFileEntry
-  data: Uint8Array
-  crc16: number | null
-}
-
-export interface E87FileBrowseEntry {
-  name: string
-  isFolder: boolean
-  sizeBytes: number
-  cluster: number
-  rawHex: string
-}
-
 export interface E87TargetFeatureMapResult {
   mask: number
   raw: string
@@ -391,24 +376,12 @@ const PUBLIC_SYSINFO_ATTR_NAMES: Record<number, string> = {
   19: 'sound_card',
 }
 
-const SMALL_FILE_TYPES: Array<{ type: number; name: string }> = [
-  { type: 1, name: 'contacts' },
-  { type: 2, name: 'sports_record' },
-  { type: 3, name: 'heart_rate' },
-  { type: 4, name: 'blood_oxygen' },
-  { type: 5, name: 'sleep' },
-  { type: 6, name: 'message_sync' },
-  { type: 7, name: 'weather' },
-  { type: 8, name: 'call_log' },
-  { type: 9, name: 'step' },
-]
-
-export async function connectE87(log?: (msg: string) => void): Promise<E87Connection> {
+export async function connectE87(log?: (msg: string) => void, remembered?: BluetoothDevice): Promise<E87Connection> {
   if (!('bluetooth' in navigator)) {
     throw new Error('Web Bluetooth is not available in this browser.')
   }
 
-  const device = await navigator.bluetooth.requestDevice({
+  const device = remembered ?? await navigator.bluetooth.requestDevice({
     filters: [
       { namePrefix: 'E87' },
       { namePrefix: 'E01' },
@@ -448,7 +421,7 @@ export async function connectE87(log?: (msg: string) => void): Promise<E87Connec
   //       GATT session resources.
 
   const isWindows = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent)
-  const MAX_ATTEMPTS = isWindows ? 5 : 3
+  const MAX_ATTEMPTS = remembered ? 1 : isWindows ? 5 : 3
   // Exponential back-off base delay (ms).  Windows needs longer gaps because
   // the WinRT BLE stack holds resources for ~7 s after a failed attempt.
   const BASE_DELAY_MS = isWindows ? 2000 : 500
@@ -571,7 +544,7 @@ export async function connectE87(log?: (msg: string) => void): Promise<E87Connec
       // Auto-respond to device-initiated commands so they don't clog the queue
       autoAckDeviceCommand(frame)
       // Only queue frames that are responses or data (not auto-acked commands)
-      if ((frame.flag & 0xc0) === 0xc0 && frame.cmd !== 0x20 && frame.cmd !== 0x1c && frame.cmd !== 0x1d) {
+      if ((frame.flag & 0xc0) === 0xc0 && !QUEUED_DEVICE_CMDS.has(frame.cmd)) {
         return // Already auto-acked, don't queue
       }
     } else {
@@ -771,6 +744,7 @@ async function sendRcspCommandAndWait(
       if (f.cmd !== cmd) return false
       // Response frames have flag bit 7 cleared (type=response)
       // Accept if seq matches OR if body is long enough (relaxed for devices that don't echo seq)
+      if ((f.flag & 0x80) !== 0) return false // device command, not a response
       if (f.body.length >= 2 && f.body[1] === seq) return true
       // Relaxed: accept any response for this cmd if flag indicates response
       if ((f.flag & 0x80) === 0 && f.body.length >= 1) return true
@@ -1167,315 +1141,221 @@ export async function refreshBatteryE87(conn: E87Connection, log: (msg: string) 
   return { level, updatedAt, charging: false }
 }
 
-function parseSmallFileQueryBody(type: number, typeName: string, body: Uint8Array): E87SmallFileEntry[] {
-  // Seen in SDK: [version][id_hi][id_lo][size_hi][size_lo]...
-  // Some devices prepend a status byte, so try a few possible starts.
-  const starts = [1, 2, 0]
-  for (const start of starts) {
-    const rest = body.length - start
-    if (rest <= 0 || rest % 4 !== 0) continue
-    const out: E87SmallFileEntry[] = []
-    for (let i = start; i + 3 < body.length; i += 4) {
-      const id = (body[i] << 8) | body[i + 1]
-      const size = (body[i + 2] << 8) | body[i + 3]
-      if (id === 0 && size === 0) continue
-      out.push({ type, typeName, id, size })
-    }
-    if (out.length > 0 || rest === 0) return out
-  }
-  return []
+// ─── Badge file manager (browse, read back, delete, format) and clock ───
+//
+// Ported from Badge Studio, Copyright (c) 2026 Badge Studio contributors, MIT License
+// (github.com/martinferreiraHCA/Badge), which
+// validated these layouts against the official Jieli RCSP SDK and a real E01.
+//
+// Browse (0x0C): [type][readNum][start BE16][devHandle BE32][pathLen BE16][clusters BE32...]
+//   The reply only carries a total. Entries stream as DATA (0x01) frames whose
+//   parameter starts with 0x0C, and the badge ends the listing with 0x0D [reason].
+//   FileStruct: [flags][cluster BE32][fileNum BE16][nameLen][name]
+//   flags: bit0 file, bit1 NOT unicode (GBK), bits 2-6 device index.
+// Read back (0x24): start [1][devHandle][offset][cluster] -> [op][size BE32];
+//   data as DATA frames [0x24][offset BE32][crc16?][bytes], badge stop [0x80, ret],
+//   phone cancel [0x81, reason]. Some badges stop after one window, so the read
+//   restarts from the last offset until the file is complete.
+// Delete: 0x1F [last][devHandle][type=1][cluster], fallback 0x23 [0][ASCII name].
+// Format: 0x22 [devHandle] -> [reason].
+
+export interface E87BadgeFile {
+  name: string
+  isFile: boolean
+  cluster: number
+  unicode: boolean
+  path: string
+  handle: number
 }
 
-export async function listSmallFilesE87(conn: E87Connection, log: (msg: string) => void): Promise<E87SmallFileEntry[]> {
-  await ensureE87Auth(conn, log)
-  drainStaleFrames(conn.notificationQueue, log)
-
-  const all: E87SmallFileEntry[] = []
-  for (const t of SMALL_FILE_TYPES) {
-    try {
-      const queryBody = Uint8Array.of(0x00, t.type)
-      const ack = await sendE87CommandAndWait(conn, 0x28, queryBody, log, 7000)
-      const parsed = parseSmallFileQueryBody(t.type, t.name, ack.body)
-      if (parsed.length > 0) {
-        log(`Small-file type ${t.name}: ${parsed.length} item(s)`)
-        all.push(...parsed)
-      }
-    } catch (err) {
-      log(`Small-file type ${t.name}: no response (${(err as Error).message})`)
-    }
-  }
-
-  return all.sort((a, b) => a.type - b.type || a.id - b.id)
+export async function syncTimeE87(conn: E87Connection, log: (msg: string) => void, date = new Date()): Promise<void> {
+  if (!conn.server?.connected) throw new Error('Device is disconnected.')
+  await writeChunkTo(conn.controlChar, qixTimeFrame(date))
+  log(`Clock set to ${date.toLocaleString()}`)
 }
 
-export async function readSmallFileE87(
+/** Device command frames (flag 0xC0/0x80) arriving on the queue: body = [seq, ...param]. */
+const isDeviceCmd = (f: E87Frame, cmd: number) => (f.flag & 0x80) !== 0 && f.cmd === cmd
+
+/** Pull matching frames off the queue until `isStop` matches or the stream goes idle. */
+async function collectStream(
   conn: E87Connection,
-  entry: E87SmallFileEntry,
-  log: (msg: string) => void,
-): Promise<E87SmallFileReadResult> {
-  await ensureE87Auth(conn, log)
-
-  // op=1, type, id(2), offset(2), len(2), flag(1)
-  const maxLen = Math.min(0xffff, Math.max(entry.size, 256))
-  const body = Uint8Array.of(
-    0x01,
-    entry.type & 0xff,
-    (entry.id >> 8) & 0xff,
-    entry.id & 0xff,
-    0x00,
-    0x00,
-    (maxLen >> 8) & 0xff,
-    maxLen & 0xff,
-    0x01,
-  )
-
-  const ack = await sendE87CommandAndWait(conn, 0x28, body, log, 9000)
-  let dataStart = 3
-  let crc16: number | null = null
-
-  if (ack.body.length >= 3) {
-    // Typical: [ret][crc_hi][crc_lo][data...]
-    const ret = ack.body[0]
-    if (ret === 0x00) {
-      crc16 = (ack.body[1] << 8) | ack.body[2]
-      dataStart = 3
-    } else if (ack.body.length >= 4 && ack.body[1] === 0x00) {
-      // Some stacks echo op before status: [op][ret][crc_hi][crc_lo][data...]
-      crc16 = (ack.body[2] << 8) | ack.body[3]
-      dataStart = 4
-    }
-  }
-
-  const data = ack.body.slice(Math.min(dataStart, ack.body.length))
-  log(`Read small file type=${entry.typeName} id=${entry.id} bytes=${data.length}`)
-  return { entry, data, crc16 }
-}
-
-export async function deleteSmallFileE87(
-  conn: E87Connection,
-  entry: E87SmallFileEntry,
-  log: (msg: string) => void,
+  onFrame: (f: E87Frame) => 'data' | 'stop' | null,
+  firstMs: number,
+  idleMs: number,
 ): Promise<void> {
-  await ensureE87Auth(conn, log)
-
-  // op=4, type, id(2)
-  const body = Uint8Array.of(
-    0x04,
-    entry.type & 0xff,
-    (entry.id >> 8) & 0xff,
-    entry.id & 0xff,
-  )
-
-  const ack = await sendE87CommandAndWait(conn, 0x28, body, log, 7000)
-  const ret = ack.body.length ? ack.body[0] : 0
-  if (ret !== 0x00) {
-    throw new Error(`Delete failed for type=${entry.typeName} id=${entry.id}, ret=0x${ret.toString(16)}`)
-  }
-  log(`Deleted small file type=${entry.typeName} id=${entry.id}`)
-}
-
-/**
- * Browse device filesystem using RCSP StartFileBrowseCmd (opcode 0x0C).
- *
- * Parameter layout (from decompiled FileBrowseParam):
- *   [type:1] [readNum:1] [startIndex:2 BE] [devHandler:4 BE] [pathLen:2 LE] [path:N*4 BE]
- *
- * type: 0=folder, 1=file
- * devHandler: 0=USB, 1=SD0, 2=SD1, 3=Flash
- *
- * Response is parsed as file/folder entries.
- */
-async function sendFileBrowseRequest(
-  conn: E87Connection,
-  log: (msg: string) => void,
-  type: number,
-  readNum: number,
-  startIndex: number,
-  devHandler: number,
-  clusters: number[],
-): Promise<E87Frame> {
-  // Build path data: each cluster is a big-endian 4-byte int
-  const pathBytes = new Uint8Array(clusters.length * 4)
-  for (let i = 0; i < clusters.length; i++) {
-    const c = clusters[i]
-    pathBytes[i * 4 + 0] = (c >> 24) & 0xff
-    pathBytes[i * 4 + 1] = (c >> 16) & 0xff
-    pathBytes[i * 4 + 2] = (c >> 8) & 0xff
-    pathBytes[i * 4 + 3] = c & 0xff
-  }
-  const pathLen = pathBytes.length
-
-  // Serialize: [type][readNum][startIndex:2 BE][devHandler:4 BE][pathLen:2 LE][pathBytes]
-  const param = new Uint8Array(1 + 1 + 2 + 4 + 2 + pathLen)
-  param[0] = type & 0xff
-  param[1] = readNum & 0xff
-  param[2] = (startIndex >> 8) & 0xff
-  param[3] = startIndex & 0xff
-  param[4] = (devHandler >> 24) & 0xff
-  param[5] = (devHandler >> 16) & 0xff
-  param[6] = (devHandler >> 8) & 0xff
-  param[7] = devHandler & 0xff
-  param[8] = pathLen & 0xff        // LE low byte
-  param[9] = (pathLen >> 8) & 0xff // LE high byte
-  param.set(pathBytes, 10)
-
-  log(`FileBrowse: type=${type} readNum=${readNum} startIndex=${startIndex} devHandler=${devHandler} clusters=[${clusters}]`)
-
-  // Use manual send+wait so we can handle non-zero status without throwing
-  const seq = nextRcspSeq(conn)
-  const body = new Uint8Array(1 + param.length)
-  body[0] = seq
-  body.set(param, 1)
-  const frame = buildE87Frame(0xc0, 0x0c, body)
-  log(`TX RCSP cmd=0xc seq=${seq} len=${body.length}`)
-  await writeChunkTo(conn.writeChar, frame)
-
-  return waitForNotificationFrame(
-    conn.notificationQueue,
-    (f) => f.cmd === 0x0c && (f.flag & 0x80) === 0,
-    10000,
-    'rcsp ack cmd 0xc (FileBrowse)',
-    log,
-  )
-}
-
-const DEV_HANDLER_NAMES: Record<number, string> = {
-  0: 'USB', 1: 'SD0', 2: 'SD1', 3: 'Flash',
-}
-
-export async function browseFilesE87(
-  conn: E87Connection,
-  log: (msg: string) => void,
-  options?: {
-    type?: number       // 0=folder, 1=file (default: 1)
-    readNum?: number    // items to read (default: 20)
-    startIndex?: number // 1-based start (default: 1)
-    devHandler?: number // 0=USB, 1=SD0, 2=SD1, 3=Flash (default: auto-try)
-    clusters?: number[] // path clusters (default: [0] for root)
-  },
-): Promise<E87FileBrowseEntry[]> {
-  await ensureE87Auth(conn, log)
-  drainStaleFrames(conn.notificationQueue, log)
-
-  const type = options?.type ?? 1
-  const readNum = options?.readNum ?? 20
-  const startIndex = options?.startIndex ?? 1
-  const clusters = options?.clusters ?? [0]
-
-  // If devHandler specified, try only that; otherwise try all (Flash first)
-  const handlersToTry = options?.devHandler !== undefined
-    ? [options.devHandler]
-    : [3, 2, 1, 0]  // Flash, SD1, SD0, USB
-
-  for (const devHandler of handlersToTry) {
-    drainStaleFrames(conn.notificationQueue, log)
-    try {
-      const ack = await sendFileBrowseRequest(conn, log, type, readNum, startIndex, devHandler, clusters)
-      const status = ack.body[0] ?? 0xff
-      const statusName = RCSP_STATUS_NAMES[status] ?? `0x${status.toString(16)}`
-      log(`FileBrowse[${DEV_HANDLER_NAMES[devHandler] ?? devHandler}]: status=${statusName} body(${ack.body.length})=${toHex(ack.body.slice(0, Math.min(80, ack.body.length)))}`)
-
-      // Give device a moment, then drain any StopFileBrowse commands it sends
-      await sleep(200)
-      drainStaleFrames(conn.notificationQueue, log)
-
-      if (status !== 0x00) {
-        log(`FileBrowse[${DEV_HANDLER_NAMES[devHandler] ?? devHandler}]: ${statusName}, skipping.`)
-        continue
-      }
-
-      const payload = ack.body.slice(2)
-      if (payload.length === 0) {
-        log(`FileBrowse[${DEV_HANDLER_NAMES[devHandler] ?? devHandler}]: success but empty payload.`)
-        continue
-      }
-
-      const entries = parseFileBrowseResponse(payload, type, log)
-      if (entries.length > 0) {
-        log(`FileBrowse[${DEV_HANDLER_NAMES[devHandler] ?? devHandler}]: found ${entries.length} entries.`)
-        return entries
-      }
-    } catch (err) {
-      log(`FileBrowse[${DEV_HANDLER_NAMES[devHandler] ?? devHandler}]: ${(err as Error).message}`)
+  let deadline = Date.now() + firstMs
+  while (Date.now() < deadline) {
+    if (!conn.server?.connected) throw new Error('Device disconnected.')
+    let consumed = false
+    for (let i = 0; i < conn.notificationQueue.length; i++) {
+      const f = parseE87Frame(conn.notificationQueue[i])
+      if (!f) continue
+      const kind = onFrame(f)
+      if (!kind) continue
+      conn.notificationQueue.splice(i, 1)
+      i--
+      consumed = true
+      if (kind === 'stop') return
     }
+    if (consumed) deadline = Date.now() + idleMs
+    else await sleep(20)
   }
-
-  log('FileBrowse: no entries found on any storage device.')
-  drainStaleFrames(conn.notificationQueue, log)
-  return []
 }
 
-function parseFileBrowseResponse(payload: Uint8Array, queryType: number, log: (msg: string) => void): E87FileBrowseEntry[] {
-  const entries: E87FileBrowseEntry[] = []
-  if (payload.length < 2) {
-    log(`FileBrowse: empty response (${payload.length} bytes)`)
-    return entries
-  }
+let cachedHandle: { conn: E87Connection; handle: number } | null = null
 
-  // Try to parse as a sequence of entries
-  // The response format varies by device, so try multiple parsing strategies
-  log(`FileBrowse: parsing ${payload.length} bytes of response data`)
-  log(`FileBrowse: raw hex: ${toHex(payload.slice(0, Math.min(120, payload.length)))}`)
-
-  // Strategy 1: try to decode as UTF-16LE name entries
-  // Each entry might be: [cluster:4 BE][size:4 BE][name_len:1][name:UTF16LE]
-  let i = 0
-  let entryCount = 0
-  while (i < payload.length) {
-    // Need at least 9 bytes for cluster + size + name_len
-    if (i + 9 > payload.length) break
-    const cluster = ((payload[i] << 24) | (payload[i+1] << 16) | (payload[i+2] << 8) | payload[i+3]) >>> 0
-    const sizeBytes = ((payload[i+4] << 24) | (payload[i+5] << 16) | (payload[i+6] << 8) | payload[i+7]) >>> 0
-    const nameLen = payload[i+8]
-    if (nameLen === 0 || i + 9 + nameLen > payload.length) break
-    // Try decoding name as UTF-16LE
-    const nameRaw = payload.slice(i + 9, i + 9 + nameLen)
-    let name: string
-    try {
-      // If nameLen is even, try UTF-16LE; otherwise treat as UTF-8
-      if (nameLen >= 2 && nameLen % 2 === 0) {
-        name = new TextDecoder('utf-16le').decode(nameRaw).replace(/\0+$/, '')
-      } else {
-        name = new TextDecoder().decode(nameRaw).replace(/\0+$/, '')
-      }
-    } catch {
-      name = toHex(nameRaw)
-    }
-    entries.push({
-      name,
-      isFolder: queryType === 0,
-      sizeBytes,
-      cluster,
-      rawHex: toHex(payload.slice(i, i + 9 + nameLen)),
-    })
-    entryCount++
-    i += 9 + nameLen
-    if (entryCount > 100) break
-  }
-
-  if (entries.length === 0) {
-    // Strategy 2: Just log the raw data for now
-    log(`FileBrowse: could not parse structured entries, raw payload logged above`)
-  } else {
-    for (const e of entries) {
-      log(`FileBrowse: ${e.isFolder ? '[DIR]' : '[FILE]'} "${e.name}" size=${e.sizeBytes} cluster=${e.cluster}`)
-    }
-  }
-
-  return entries
-}
-
-/**
- * Stop a file browse session using RCSP StopFileBrowseCmd (opcode 0x0D).
- */
-export async function stopBrowseE87(conn: E87Connection, log: (msg: string) => void): Promise<void> {
+/** Media storage handle (SD1) from SysInfo attr 2; E87 firmware uses 2 when it doesn't answer. */
+export async function getStorageHandleE87(conn: E87Connection, log: (msg: string) => void): Promise<number> {
+  if (cachedHandle?.conn === conn) return cachedHandle.handle
   await ensureE87Auth(conn, log)
-  drainStaleFrames(conn.notificationQueue, log)
+  let handle = 2
   try {
-    await sendRcspCommandAndWait(conn, 0x0d, Uint8Array.of(0x00), log, 3000)
-  } catch { /* device may have already stopped */ }
+    const ack = await sendRcspCommandAndWait(conn, 0x07, Uint8Array.of(0xff, 0, 0, 0, 4), log, 5000)
+    const p = ack.body.slice(2)
+    for (let i = 1; i < p.length;) {
+      const len = p[i]
+      if (len < 1 || i + 1 + len > p.length) break
+      if (p[i + 1] === 2) {
+        const d = p.slice(i + 2, i + 1 + len)
+        // [onlineBits][USB][SD0][SD1]...; SD1 is index 2 at byte offset 1 + 2*4
+        if (d.length >= 13 && d[0] !== 0xff && d[0] & 0b100) handle = readU32BE(d, 9)
+        break
+      }
+      i += len + 1
+    }
+  } catch (e) {
+    log(`Storage query failed (${(e as Error).message}); using handle 2.`)
+  }
+  log(`Storage handle: 0x${handle.toString(16)}`)
+  cachedHandle = { conn, handle }
+  return handle
+}
+
+async function browsePage(conn: E87Connection, log: (msg: string) => void, handle: number, clusters: number[], start: number, pageSize: number) {
   drainStaleFrames(conn.notificationQueue, log)
-  log('FileBrowse: stopped.')
+  const chunks: Uint8Array[] = []
+  await sendRcspCommandAndWait(conn, 0x0c, fileBrowseParam(0, pageSize, start, handle, clusters), log, 8000)
+  await collectStream(conn, (f) => {
+    if (isDeviceCmd(f, 0x01) && f.body[1] === 0x0c) { chunks.push(f.body.slice(2)); return 'data' }
+    if (isDeviceCmd(f, 0x0d)) return 'stop'
+    return null
+  }, 6000, 1500)
+  return parseFileStructs(concatBytes(...chunks))
+}
+
+/** List files at the root and one folder level down. */
+export async function browseFilesE87(conn: E87Connection, log: (msg: string) => void, pageSize = 20): Promise<E87BadgeFile[]> {
+  const handle = await getStorageHandleE87(conn, log)
+  const walk = async (clusters: number[], depth: number, path: string): Promise<E87BadgeFile[]> => {
+    const entries: E87BadgeFile[] = []
+    for (let start = 1; entries.length < 300;) {
+      const page = await browsePage(conn, log, handle, clusters, start, pageSize)
+      entries.push(...page.map((e) => ({ ...e, path, handle })))
+      if (page.length < pageSize) break
+      start += page.length
+    }
+    const files = entries.filter((e) => e.isFile)
+    if (depth < 1) {
+      for (const dir of entries.filter((e) => !e.isFile).slice(0, 12)) {
+        try { files.push(...await walk(clusters.concat(dir.cluster), depth + 1, path ? `${path}/${dir.name}` : dir.name)) }
+        catch (e) { log(`Folder ${dir.name}: ${(e as Error).message}`) }
+      }
+    }
+    return files
+  }
+  const files = await walk([0], 0, '')
+  log(`Badge files: ${files.length}`)
+  return files
+}
+
+/** Read a file back from the badge. Stops early (cancel) once maxBytes arrived. */
+export async function readFileE87(
+  conn: E87Connection,
+  entry: E87BadgeFile,
+  log: (msg: string) => void,
+  opts: { maxBytes?: number; onProgress?: (got: number, size: number) => void } = {},
+): Promise<{ data: Uint8Array; size: number }> {
+  const maxBytes = opts.maxBytes ?? Infinity
+  await ensureE87Auth(conn, log)
+  const chunks: Uint8Array[] = []
+  let got = 0
+  let size = 0
+  let crcMode: boolean | null = null
+  const looksFile = (b: Uint8Array) => (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46) || (b[0] === 0xff && b[1] === 0xd8)
+  for (let round = 0; round < 400; round++) {
+    drainStaleFrames(conn.notificationQueue, log)
+    // Drop leftover replies to an earlier cancel so they are not mistaken for this start.
+    for (let i = conn.notificationQueue.length - 1; i >= 0; i--) {
+      const q = parseE87Frame(conn.notificationQueue[i])
+      if (q && q.cmd === 0x24 && (q.flag & 0x80) === 0) conn.notificationQueue.splice(i, 1)
+    }
+    const ack = await sendRcspCommandAndWait(
+      conn, 0x24, concatBytes(Uint8Array.of(1), u32be(entry.handle), u32be(got), u32be(entry.cluster)), log, 10000,
+    )
+    if (round === 0) {
+      const p = ack.body.slice(2)
+      size = p.length >= 5 ? readU32BE(p, 1) : p.length >= 4 ? readU32BE(p, 0) : 0
+    }
+    let roundGot = 0
+    let stopRet = 0
+    let cancelled = false
+    await collectStream(conn, (f) => {
+      if (isDeviceCmd(f, 0x01) && f.body[1] === 0x24) {
+        const p = f.body.slice(2)
+        if (p.length < 4 || readU32BE(p, 0) !== got) return 'data'
+        let body = p.slice(4)
+        if (crcMode === null) crcMode = body.length > 6 && !looksFile(body) && looksFile(body.slice(2))
+        if (crcMode) body = body.slice(2)
+        chunks.push(body)
+        got += body.length
+        roundGot += body.length
+        opts.onProgress?.(got, size)
+        if (got >= maxBytes && !(size && got >= size)) {
+          cancelled = true
+          writeChunkTo(conn.writeChar, buildE87Frame(0xc0, 0x24, Uint8Array.of(nextRcspSeq(conn), 0x81, 0))).catch(() => {})
+        }
+        return 'data'
+      }
+      if (isDeviceCmd(f, 0x24)) { stopRet = f.body[2] ?? 0; return 'stop' }
+      return null
+    }, 10000, 4000)
+    if (stopRet !== 0 && !cancelled) throw new Error(`Badge stopped the read (code ${stopRet}).`)
+    if ((size && got >= size) || got >= maxBytes || cancelled || !roundGot) break
+    log(`Read paused at ${got}/${size}; continuing.`)
+  }
+  return { data: concatBytes(...chunks), size }
+}
+
+/** First frame of an AVI/JPEG on the badge, for a thumbnail. */
+export async function previewFileE87(conn: E87Connection, entry: E87BadgeFile, log: (msg: string) => void): Promise<Uint8Array> {
+  for (let budget = 24 * 1024, attempt = 0; attempt < 3; attempt++, budget *= 3) {
+    const { data, size } = await readFileE87(conn, entry, log, { maxBytes: budget })
+    const jpeg = firstJpeg(data)
+    if (jpeg) return jpeg
+    if (size && data.length >= size) break
+  }
+  throw new Error(`No JPEG frame found in ${entry.name}.`)
+}
+
+export async function deleteFileE87(conn: E87Connection, entry: E87BadgeFile, log: (msg: string) => void): Promise<void> {
+  await ensureE87Auth(conn, log)
+  try {
+    await sendRcspCommandAndWait(conn, 0x1f, concatBytes(Uint8Array.of(1), u32be(entry.handle), Uint8Array.of(1), u32be(entry.cluster)), log, 15000)
+  } catch (e) {
+    log(`Delete by cluster failed (${(e as Error).message}); trying by name.`)
+    await sendRcspCommandAndWait(conn, 0x23, concatBytes(Uint8Array.of(0), new TextEncoder().encode(entry.name)), log, 10000)
+  }
+  log(`Deleted ${entry.name}`)
+}
+
+/** Wipe the badge's media storage. */
+export async function formatStorageE87(conn: E87Connection, log: (msg: string) => void): Promise<void> {
+  const handle = await getStorageHandleE87(conn, log)
+  const ack = await sendRcspCommandAndWait(conn, 0x22, u32be(handle), log, 60000)
+  const reason = ack.body[2] ?? 0
+  if (reason !== 0) throw new Error(`Format refused (reason ${reason}).`)
+  log('Storage formatted.')
 }
 
 /**
