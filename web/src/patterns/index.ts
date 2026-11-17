@@ -18,6 +18,7 @@ import {
 import { generateRadarSweep, generateArcRadar, generateArcRadarHd } from './sci-fi'
 import { generateClockFace, generateFireworks, generatePerlinFlowField, generateReactionDiffusion } from './generative'
 import { generatePaintedBase } from './scenic'
+import { generateDigitalClock, generateNeonClock, generateFlipClock, generateBinaryClock, generateMinimalClock } from './clocks'
 import {
   generateBeskarSigil,
   generateMandoCompass,
@@ -61,4 +62,9 @@ export const GENERATORS: Record<string, (opts: PatternOptions) => Promise<Uint8A
   perlinFlowField: generatePerlinFlowField,
   reactionDiffusion: generateReactionDiffusion,
   paintedBase: generatePaintedBase,
+  digitalClock: generateDigitalClock,
+  neonClock: generateNeonClock,
+  flipClock: generateFlipClock,
+  binaryClock: generateBinaryClock,
+  minimalClock: generateMinimalClock,
 }

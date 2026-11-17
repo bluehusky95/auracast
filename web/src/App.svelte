@@ -50,6 +50,8 @@
   import AuraCastLogo3D from './lib/AuraCastLogo3D.svelte'
   import UploadProgress from './lib/UploadProgress.svelte'
   import BadgeManager from './lib/BadgeManager.svelte'
+  import OverlayPanel from './lib/OverlayPanel.svelte'
+  import { applyOverlay, defaultOverlay, overlayActive } from './lib/overlay'
   import PatternMode from './lib/PatternMode.svelte'
   import { generatePatternInWorker, PatternCancelledError } from './lib/pattern-worker-client'
   import LiveTransformCanvas from './lib/LiveTransformCanvas.svelte'
@@ -63,6 +65,7 @@
     video:  () => import('./lib/VideoMode.svelte'),
     gif:    () => import('./lib/GifMode.svelte'),
     qr:     () => import('./lib/QrMode.svelte'),
+    pixel:  () => import('./lib/PixelMode.svelte'),
   }
   const lazyModes: Record<string, any> = $state({})
   const lazyModePromises: Record<string, Promise<void>> = {}
@@ -272,6 +275,7 @@
 
   let isDeviceOpsBusy = $state(false)
   let badgeOpen = $state(false)
+  let overlay = $state(defaultOverlay())
   let rcspInfoText = $state('')
 
   let logs: string[] = $state([])
@@ -287,6 +291,7 @@
     { id: 'video',   label: 'Video',                               icon: 'movie' },
     { id: 'gif',     label: 'GIF',                                  icon: 'gif_box' },
     { id: 'qr',      label: 'QR code',  mobileLabel: 'QR',         icon: 'qr_code' },
+    { id: 'pixel',   label: 'Pixel art', mobileLabel: 'Pixel',     icon: 'grid_on' },
   ]
 
   // Static per-mode metadata for the page header + mode panel title.
@@ -300,6 +305,7 @@
     video:   { icon: 'movie',        title: 'Video',    panelTitle: 'Video clip',     intro: 'Trim a clip, set the framerate, and send it as an MJPEG that fits in 900\u00a0KB.' },
     gif:     { icon: 'gif_box',      title: 'GIF',      panelTitle: 'Import GIF',     intro: 'Drop an animated GIF. Frames are extracted, cropped to circle, and sent as a looping badge animation.' },
     qr:      { icon: 'qr_code',      title: 'QR code',  panelTitle: 'QR code',        intro: 'Generate a circular QR with custom colors and dot styles. Scans straight off the badge.' },
+    pixel:   { icon: 'grid_on',      title: 'Pixel art', panelTitle: 'Pixel Lab',     intro: 'Draw pixel art frame by frame, then play it as a loop on the badge. Your drawing is saved in this browser.' },
   }
   let selectedFile: File | null = $state(null)
   let selectedFiles: File[] = $state([])
@@ -558,7 +564,8 @@
    */
   async function buildPatternAvi(pat: PatternDef): Promise<{ avi: Uint8Array; label: string; fits: boolean }> {
     const out = getOutputFrameSize()
-    const cacheKey = patternCacheKey(pat.id, patternFrameCount, patternFps, out.width, out.height)
+    // Live clocks show the time at generation, so they expire with the minute.
+    const cacheKey = patternCacheKey(pat.id, patternFrameCount, patternFps, out.width, out.height) + (pat.live ? `|${new Date().toISOString().slice(0, 16)}` : '')
     const cached = patternPreviewCache.get(cacheKey)
     if (cached) {
       // Re-insert to mark as most-recently-used.
@@ -1119,7 +1126,7 @@
   })
 
   $effect(() => {
-    if (isWriting || isGeneratingPreview || uploadMode === 'pattern' || uploadMode === 'qr' || uploadMode === 'gif') return
+    if (isWriting || isGeneratingPreview || uploadMode === 'pattern' || uploadMode === 'qr' || uploadMode === 'gif' || uploadMode === 'pixel') return
 
     if (uploadMode === 'image' && imagePreviewMode === 'preview' && imageLiveFrames.length > 0 && selectedFile) {
       const signature = [
@@ -1510,23 +1517,27 @@
 
   // ─── GIF mode result handler ───
 
-  async function handleGifResult(avi: Uint8Array, fps: number): Promise<void> {
+  async function handleGifResult(avi: Uint8Array, fps: number, kind = 'GIF'): Promise<void> {
     clearPreparedState()
     clearAviPreview()
 
     preparedPayload = avi
-    preparedPayloadLabel = `GIF @ ${fps} fps - ${formatBytes(avi.length)}`
+    preparedPayloadLabel = `${kind} @ ${fps} fps - ${formatBytes(avi.length)}`
     aviPreviewFps = fps
     aviPreviewFrames = await parseAviFrames(avi)
 
-    log(`GIF ready: ${aviPreviewFrames.length} frames @ ${fps} fps, ${formatBytes(avi.length)}`)
+    log(`${kind} ready: ${aviPreviewFrames.length} frames @ ${fps} fps, ${formatBytes(avi.length)}`)
     requestAnimationFrame(() => aviPlayer?.startPreview())
   }
 
   // ─── Get upload bytes ───
 
   async function getUploadBytes(): Promise<Uint8Array> {
-    const bytes = await getUploadBytesRaw()
+    let bytes = await getUploadBytesRaw()
+    if (overlayActive(overlay)) {
+      bytes = await applyOverlay(bytes, $state.snapshot(overlay), getOutputFrameSize(), log)
+      log(`Overlay applied: ${formatBytes(bytes.length)}`)
+    }
     // Strip browser-injected ICC/EXIF APP segments from JPEGs. No-op for
     // AVI (RIFF magic doesn't match FFD8). Fixes the on-device "first few
     // rows only" rendering bug caused by Jieli's MJPEG decoder choking on
@@ -1555,6 +1566,7 @@
       if (videoLiveFrames.length === 0) throw new Error('No video frames cached.')
       return previewBitmapsToAvi(videoLiveFrames, videoFps, getTransform('video'), log, getOutputFrameSize())
     }
+    if (uploadMode === 'pixel') throw new Error('Click Preview clip in Pixel Lab first.')
     if (uploadMode === 'gif') {
       if (!preparedPayload) throw new Error('No GIF processed. Drop a GIF file first.')
       return preparedPayload
@@ -1578,7 +1590,7 @@
 
   function resolveUploadModeForDevice(): UploadMode {
     if (uploadMode === 'qr') return 'image'
-    if (uploadMode === 'gif') return 'video'
+    if (uploadMode === 'gif' || uploadMode === 'pixel') return 'video'
     if (uploadMode === 'text') return textEffect === 'static' ? 'image' : 'pattern'
     if (preparedIsStillImage) return 'image'
     return uploadMode
@@ -2345,15 +2357,15 @@
                       {/snippet}
                     </PreviewSurface>
                   {/if}
-                {:else if uploadMode === 'gif'}
+                {:else if uploadMode === 'gif' || uploadMode === 'pixel'}
                   {#if aviPreviewFrames.length > 0}
-                    <AviPlayer bind:this={aviPlayer} frames={aviPreviewFrames} fps={aviPreviewFps} label="GIF preview" />
+                    <AviPlayer bind:this={aviPlayer} frames={aviPreviewFrames} fps={aviPreviewFps} label="{uploadMode === 'gif' ? 'GIF' : 'Pixel art'} preview" />
                   {:else}
                     <PreviewSurface size={260} quiet empty busy={gifBusy}>
                       {#snippet empty_()}
                         <div class="flex flex-col items-center gap-1.5 text-on-surface-variant">
-                          <span class="material-symbols-outlined text-[40px] opacity-70">gif_box</span>
-                          <span class="text-label-md font-medium">Drop a GIF to preview</span>
+                          <span class="material-symbols-outlined text-[40px] opacity-70">{uploadMode === 'gif' ? 'gif_box' : 'grid_on'}</span>
+                          <span class="text-label-md font-medium">{uploadMode === 'gif' ? 'Drop a GIF to preview' : 'Draw, then click Preview clip'}</span>
                         </div>
                       {/snippet}
                     </PreviewSurface>
@@ -2538,6 +2550,11 @@
                     onResult={handleGifResult}
                   />
                 {/if}
+              {:else if uploadMode === 'pixel'}
+                {#if lazyModes.pixel}
+                  {@const PixelMode = lazyModes.pixel}
+                  <PixelMode {isWriting} bind:busy={gifBusy} onResult={(avi: Uint8Array, fps: number) => handleGifResult(avi, fps, 'Pixel art')} />
+                {/if}
               {:else if uploadMode === 'qr'}
                 {#if lazyModes.qr}
                   {@const QrMode = lazyModes.qr}
@@ -2564,6 +2581,19 @@
               {/if}
             </div>
           </div>
+          </M3Card>
+
+          <M3Card variant="filled" class="!rounded-2xl p-4 sm:p-5 min-w-0">
+            <details>
+              <summary class="cursor-pointer text-title-lg text-on-surface font-semibold flex items-center gap-2">
+                <span class="material-symbols-outlined text-primary" aria-hidden="true">add_reaction</span>
+                Stickers, frame &amp; caption
+                {#if overlayActive(overlay)}<span class="text-label-md text-primary font-normal">On</span>{/if}
+              </summary>
+              <div class="pt-4">
+                <OverlayPanel bind:overlay getBase={getUploadBytesRaw} outSize={getOutputFrameSize} {log} disabled={isWriting} />
+              </div>
+            </details>
           </M3Card>
         </div>
 
@@ -2706,6 +2736,18 @@
             >
               <span class="material-symbols-outlined text-[14px] leading-none">bluetooth</span>
               <span>@hybridherbst</span>
+            </a>
+            <span aria-hidden="true">·</span>
+            <span>Studio features from</span>
+            <a
+              href="https://github.com/martinferreiraHCA/Badge"
+              target="_blank"
+              rel="noopener"
+              class="footer-credit"
+              aria-label="Badge Studio by martinferreiraHCA on GitHub"
+            >
+              <span class="material-symbols-outlined text-[14px] leading-none">palette</span>
+              <span>Badge Studio</span>
             </a>
           </p>
           <p class="m-0 text-label-sm text-on-surface-variant/70 italic footer-tagline-extra">

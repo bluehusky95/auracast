@@ -30,6 +30,8 @@ export interface PatternMeta {
    */
   bytesPerFrame: number
   colors?: string[]
+  /** Draws the current time, so cached clips go stale each minute. */
+  live?: boolean
   generate: (opts: PatternOptions) => Promise<Uint8Array[]>
 }
 
@@ -88,5 +90,10 @@ export const PATTERNS: PatternMeta[] = [
   pat('fireworks', 'fireworks', 'Fireworks', '🎆', 'Particle bursts with gravity and fade trails', 22000),
   pat('flow-field', 'perlinFlowField', 'Flow Field', '🌊', 'A field of streaks drifting through one closed orbit', 20000),
   pat('reaction-diffusion', 'reactionDiffusion', 'Reaction Diffusion', '🧫', 'Organic Gray-Scott chemical pattern growth', 28000),
+  { ...pat('time-digital', 'digitalClock', 'Digital Clock', '⌚', 'Current time in big glowing digits with the date', 20000), live: true },
+  { ...pat('time-flip', 'flipClock', 'Flip Clock', '📟', 'Current time on split-flap cards', 20000), live: true },
+  { ...pat('time-neon', 'neonClock', 'Neon Rings', '⭕', 'Current time as glowing hour and minute rings', 22000), live: true },
+  { ...pat('time-binary', 'binaryClock', 'Binary Clock', '💡', 'Current hours and minutes in glowing bits', 14000), live: true },
+  { ...pat('time-minimal', 'minimalClock', 'Minimal Clock', '🕰️', 'Clean analog face showing the current time', 16000), live: true },
   pat('painted-base', 'paintedBase', 'Painted Base', '🏡', 'Hand-painted round base: cottage, lane, fountain, and gatehouse', 48000),
 ]

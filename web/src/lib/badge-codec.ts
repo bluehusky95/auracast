@@ -59,3 +59,15 @@ export function qixTimeFrame(d = new Date()): Uint8Array {
   return Uint8Array.of(0x9e, 0x45, 0x08, 0x02, 0x07, 0x00, y & 0xff, (y >> 8) & 0xff, d.getMonth() + 1, d.getDate(), 0x00, d.getHours(), d.getMinutes())
 }
 
+/** Split an MJPEG AVI (or a lone JPEG) into its JPEG frames. */
+export function jpegFrames(bytes: Uint8Array): Uint8Array[] {
+  const out: Uint8Array[] = []
+  for (let i = 0; i + 2 < bytes.length; i++) {
+    if (bytes[i] !== 0xff || bytes[i + 1] !== 0xd8 || bytes[i + 2] !== 0xff) continue
+    let j = i + 2
+    while (j + 1 < bytes.length && !(bytes[j] === 0xff && bytes[j + 1] === 0xd9)) j++
+    out.push(bytes.slice(i, j + 2))
+    i = j + 1
+  }
+  return out
+}
