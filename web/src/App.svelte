@@ -91,6 +91,7 @@
     PreviewSurface,
   } from './lib/m3'
   import type { TextEffect } from './text-generator'
+  import { defaultTextLayout, type TextLayout } from './text-layout'
   // Lazy module loader for text-generator; the heavy font + canvas
   // pipeline is only pulled in when the user actually generates text.
   type TextGenModule = typeof import('./text-generator')
@@ -139,6 +140,7 @@
     textBackground?: string
     textFps?: number
     textFrames?: number
+    textLayout?: Partial<TextLayout>
     imageBackdropColor?: string
     imagePreviewMode?: PreviewMode
     sequencePreviewMode?: PreviewMode
@@ -355,6 +357,10 @@
   let textBackground = $state(s(saved.textBackground, '#000000'))
   let textFps = $state(n(saved.textFps, 12))
   let textFrames = $state(n(saved.textFrames, 24))
+  let textLayout: TextLayout = $state({
+    ...defaultTextLayout(),
+    ...(saved.textLayout && typeof saved.textLayout === 'object' ? saved.textLayout : {}),
+  })
   let textAutoSignature = $state('')
 
   let aviPreviewFrames: ImageBitmap[] = $state([])
@@ -835,6 +841,7 @@
       textBackground,
       textFps,
       textFrames,
+      textLayout,
       colorScheme,
       selectedPatternId: selectedPattern?.id,
       patternOutputMode,
@@ -1252,6 +1259,7 @@
       background: textBackground,
       frames: isStill ? 1 : textFrames,
       fps: textFps,
+      layout: $state.snapshot(textLayout),
     })
     if (isStill) {
       return { bytes: frames[0], isStill: true }
@@ -2522,6 +2530,7 @@
                     bind:textBackground
                     bind:textFps
                     bind:textFrames
+                    bind:textLayout
                     onGeneratePreview={generatePreview}
                     onGenerateStill={generateTextStill}
                   />

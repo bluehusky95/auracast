@@ -6,6 +6,8 @@
  */
 
 import { encodeJpeg } from './lib/jpeg-encoder-client'
+import { layoutText, defaultTextLayout, type TextLayout, type LaidOut } from './text-layout'
+export type { TextLayout } from './text-layout'
 
 const SIZE = 368
 const HALF = SIZE / 2
@@ -50,6 +52,8 @@ export interface TextOptions {
   background: string
   frames: number
   fps: number
+  /** Lines, size, spacing, position, outline. Defaults to auto-fit, centred. */
+  layout?: Partial<TextLayout>
 }
 
 export interface TextDef {
@@ -104,238 +108,184 @@ async function toJpeg(canvas: OffscreenCanvas, quality = 0.9): Promise<Uint8Arra
   )
 }
 
-/**
- * Pick a font size that fits `text` inside `maxWidth` at `maxLines` line(s).
- * Returns the chosen size in px and the wrapped lines.
- */
-function fitText(
-  ctx: OffscreenCanvasRenderingContext2D,
-  text: string,
-  fontFamily: string,
-  fontWeight: number,
-  maxWidth: number,
-  maxHeight: number,
-): { size: number; lines: string[] } {
-  const safe = text || ' '
-  // Try single-line first at decreasing sizes; then wrap to 2 lines.
-  for (let size = 220; size >= 20; size -= 4) {
-    ctx.font = `${fontWeight} ${size}px ${fontFamily}`
-    const w = ctx.measureText(safe).width
-    if (w <= maxWidth && size * 1.15 <= maxHeight) {
-      return { size, lines: [safe] }
-    }
-  }
-  // Wrap to up to 3 lines by words.
-  const words = safe.split(/\s+/)
-  for (let size = 140; size >= 14; size -= 4) {
-    ctx.font = `${fontWeight} ${size}px ${fontFamily}`
-    const lines: string[] = []
-    let cur = ''
-    for (const word of words) {
-      const trial = cur ? cur + ' ' + word : word
-      if (ctx.measureText(trial).width > maxWidth) {
-        if (cur) lines.push(cur)
-        cur = word
-      } else {
-        cur = trial
-      }
-    }
-    if (cur) lines.push(cur)
-    if (lines.length <= 3 && lines.length * size * 1.15 <= maxHeight) {
-      return { size, lines }
-    }
-  }
-  return { size: 24, lines: [safe.slice(0, 24)] }
+/** Safe radius: a little inside the round screen's edge. */
+const SAFE_R = HALF - 14
+
+function setFont(ctx: OffscreenCanvasRenderingContext2D, weight: number, size: number, family: string, spacing: number) {
+  ctx.font = `${weight} ${size}px ${family}`
+  ;(ctx as unknown as { letterSpacing: string }).letterSpacing = `${spacing}px`
 }
 
-function drawCenteredLines(
-  ctx: OffscreenCanvasRenderingContext2D,
-  lines: string[],
-  size: number,
-  color: string,
-  yOffset = 0,
+/** Draw one run of text with the layout's shadow and outline under the fill. */
+function paint(
+  ctx: OffscreenCanvasRenderingContext2D, s: string, x: number, y: number,
+  color: string, l: TextLayout, size: number,
 ) {
+  const stroke = () => {
+    if (l.outline <= 0) return
+    ctx.lineWidth = l.outline * 2
+    ctx.lineJoin = 'round'
+    ctx.strokeStyle = l.edgeColor
+    ctx.strokeText(s, x, y)
+  }
+  if (l.shadow) {
+    ctx.save()
+    ctx.shadowColor = l.edgeColor
+    ctx.shadowOffsetX = ctx.shadowOffsetY = Math.max(2, size * 0.05)
+    ctx.shadowBlur = Math.max(2, size * 0.04)
+    stroke()
+    ctx.fillStyle = color
+    ctx.fillText(s, x, y)
+    ctx.restore()
+  }
+  stroke()
   ctx.fillStyle = color
+  ctx.fillText(s, x, y)
+}
+
+function drawLines(
+  ctx: OffscreenCanvasRenderingContext2D, laid: LaidOut, l: TextLayout,
+  family: string, weight: number, color: string, dy = 0,
+) {
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  const lh = size * 1.15
-  const total = lines.length * lh
-  const startY = HALF - total / 2 + lh / 2 + yOffset
-  for (let i = 0; i < lines.length; i++) {
-    ctx.fillText(lines[i], HALF, startY + i * lh)
+  for (const ln of laid.lines) {
+    setFont(ctx, weight, ln.size, family, l.letterSpacing)
+    // Canvas adds letter spacing after the last glyph too; shift back by half.
+    paint(ctx, ln.text, HALF + l.letterSpacing / 2, HALF + ln.y + dy, color, l, ln.size)
   }
+}
+
+/**
+ * Lay out text the way generateTextFrames does (the UI uses it for the
+ * "runs off the screen" hint). Pass an array to force those exact lines.
+ */
+export function measureTextLayout(
+  text: string | string[], fontFamily: string, fontWeight: number, layout: TextLayout, r = SAFE_R,
+): LaidOut {
+  const [, ctx] = createCanvas()
+  const measure = (t: string, s: number) => { setFont(ctx, fontWeight, s, fontFamily, layout.letterSpacing); return ctx.measureText(t).width }
+  return layoutText(text || ' ', layout, r, measure, layout.outline * 2 + (layout.shadow ? 4 : 0))
 }
 
 export async function generateTextFrames(opts: TextOptions): Promise<Uint8Array[]> {
   const [canvas, ctx] = createCanvas()
   const frames: Uint8Array[] = []
-  // The badge is a CIRCULAR display. Use a margin from the inscribed safe area
-  // so animation offsets (bounce dy, wave dy) don't push glyphs past the rim.
-  const FRAME_PAD = 56
-  const maxW = SIZE - FRAME_PAD * 2
-  const maxH = SIZE - FRAME_PAD * 2
+  const l: TextLayout = { ...defaultTextLayout(), ...opts.layout }
+  const { fontFamily: family, fontWeight: weight } = opts
 
   // Ensure web fonts are loaded before measureText / fillText. Probe at the
   // largest size we might use so the font loader doesn't lazy-fetch mid-loop.
-  await ensureFontReady(opts.fontFamily, opts.fontWeight, 220)
+  await ensureFontReady(family, weight, 220)
 
-  const fit = fitText(ctx, opts.text, opts.fontFamily, opts.fontWeight, maxW, maxH)
+  // Effects that move the text get a smaller circle so they never reach the rim.
+  const BOUNCE = 22, WAVE = 30
+  const r = opts.effect === 'bounce' ? SAFE_R - BOUNCE : opts.effect === 'wave' ? SAFE_R - WAVE : SAFE_R
+  const fit = measureTextLayout(opts.text, family, weight, l, r)
+  // Marquee scrolls everything as one line.
+  const oneLine = (opts.text || ' ').replace(/\s*\n\s*/g, ' ')
+  // Typewriter leaves room for the cursor after the last line.
+  const typed = opts.effect === 'typewriter' ? measureTextLayout((opts.text || ' ') + '▌', family, weight, l, r) : null
+  if (typed) typed.lines = typed.lines.map((ln) => ({ ...ln, text: ln.text.replace(/▌$/, '') }))
   const totalFrames = Math.max(1, opts.effect === 'static' ? 1 : opts.frames)
-
-  // Pre-measure for the typewriter so the font size stays locked across frames
-  // and the visible prefix is anchored to a stable baseline (no jitter).
-  let typewriterFit: { size: number; lines: string[] } | null = null
-  if (opts.effect === 'typewriter') {
-    typewriterFit = fitText(ctx, (opts.text || ' ') + '▌', opts.fontFamily, opts.fontWeight, maxW, maxH)
-  }
 
   for (let f = 0; f < totalFrames; f++) {
     const phase = totalFrames === 1 ? 0 : f / totalFrames
     clear(ctx, opts.background)
-    ctx.font = `${opts.fontWeight} ${fit.size}px ${opts.fontFamily}`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
 
     switch (opts.effect) {
       case 'static': {
-        drawCenteredLines(ctx, fit.lines, fit.size, opts.color)
+        drawLines(ctx, fit, l, family, weight, opts.color)
         break
       }
 
       case 'marquee': {
-        // Single-line scroll across the disc. One unwrapped line, vertically centered.
-        const text = opts.text || ' '
-        const size = Math.min(fit.size, 140)
-        ctx.font = `${opts.fontWeight} ${size}px ${opts.fontFamily}`
-        const tw = ctx.measureText(text).width
-        const travel = SIZE + tw
-        const x = SIZE + tw / 2 - phase * travel
-        ctx.fillStyle = opts.color
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'middle'
-        ctx.fillText(text, x, HALF)
+        // Single-line scroll across the disc at the chosen size and height.
+        // Scrolling text doesn't need to fit across, so auto size is one big line.
+        const size = (l.autoSize ? 120 : l.size) * ((l.lineScale[0] ?? 100) / 100)
+        setFont(ctx, weight, size, family, l.letterSpacing)
+        const tw = ctx.measureText(oneLine).width
+        const x = SIZE + tw / 2 - phase * (SIZE + tw)
+        const y = l.vAlign === 'middle' ? HALF : HALF + (l.vAlign === 'top' ? -1 : 1) * (SAFE_R * 0.8 - size * l.lineSpacing / 2)
+        paint(ctx, oneLine, x, y, opts.color, l, size)
         break
       }
 
-      case 'rainbow': {
-        // Per-character hue with a rolling phase offset so letters cascade
-        // through the spectrum together. Falls back to a single line of the
-        // wrapped text so the cascade reads cleanly.
-        const text = (fit.lines.join(' ') || ' ')
-        const lineSize = Math.min(fit.size, 160)
-        ctx.font = `${opts.fontWeight} ${lineSize}px ${opts.fontFamily}`
-        ctx.textBaseline = 'middle'
-        ctx.textAlign = 'center'
-        const widths: number[] = []
-        let total = 0
-        for (let i = 0; i < text.length; i++) {
-          const w = ctx.measureText(text[i]).width
-          widths.push(w)
-          total += w
-        }
-        let x = HALF - total / 2
-        for (let i = 0; i < text.length; i++) {
-          const cw = widths[i]
-          const hue = (phase * 360 + i * 28) % 360
-          ctx.fillStyle = `hsl(${hue} 95% 60%)`
-          ctx.fillText(text[i], x + cw / 2, HALF)
-          x += cw
+      case 'rainbow':
+      case 'wave': {
+        // Per-character colour (rainbow) or height (wave), line by line. Widths
+        // are measured per glyph, then each glyph is centred at its mid-x to
+        // avoid kerning drift. The character index runs on across lines.
+        let i = 0
+        for (const ln of fit.lines) {
+          setFont(ctx, weight, ln.size, family, l.letterSpacing)
+          const chars = [...ln.text]
+          const widths = chars.map((c) => ctx.measureText(c).width)
+          // Smaller wave when lines are stacked so they don't run into each other.
+          const amp = Math.min(WAVE, ln.size * (fit.lines.length > 1 ? 0.12 : 0.28))
+          let x = HALF - (widths.reduce((a, b) => a + b, 0) - l.letterSpacing) / 2
+          for (let k = 0; k < chars.length; k++, i++) {
+            const cx = x + (widths[k] - l.letterSpacing) / 2
+            if (opts.effect === 'rainbow') paint(ctx, chars[k], cx, HALF + ln.y, `hsl(${(phase * 360 + i * 28) % 360} 95% 60%)`, l, ln.size)
+            else paint(ctx, chars[k], cx, HALF + ln.y + Math.sin(phase * Math.PI * 2 + i * 0.7) * amp, opts.color, l, ln.size)
+            x += widths[k]
+          }
         }
         break
       }
 
       case 'blink': {
         // 60% on / 40% off - softer cadence than a hard half-and-half cut.
-        if (phase < 0.6) drawCenteredLines(ctx, fit.lines, fit.size, opts.color)
+        if (phase < 0.6) drawLines(ctx, fit, l, family, weight, opts.color)
         break
       }
 
       case 'bounce': {
-        // Clamp dy so multi-line text never escapes the circular display.
-        const lh = fit.size * 1.15
-        const totalH = fit.lines.length * lh
-        const headroom = Math.max(8, (SIZE - totalH) / 2 - FRAME_PAD * 0.5)
-        const amp = Math.min(32, headroom)
-        const dy = Math.sin(phase * Math.PI * 2) * amp
-        drawCenteredLines(ctx, fit.lines, fit.size, opts.color, dy)
+        drawLines(ctx, fit, l, family, weight, opts.color, Math.sin(phase * Math.PI * 2) * BOUNCE)
         break
       }
 
       case 'typewriter': {
-        const text = opts.text || ' '
-        const fit2 = typewriterFit ?? fit
-        // Anchor the typed run to a fixed left edge so revealed glyphs don't
-        // jitter horizontally as more characters appear.
-        ctx.font = `${opts.fontWeight} ${fit2.size}px ${opts.fontFamily}`
-        const fullW = ctx.measureText(text).width
-        const startX = HALF - fullW / 2
-        ctx.textAlign = 'left'
-        ctx.textBaseline = 'middle'
-        ctx.fillStyle = opts.color
-        // One frame is a still of the finished line. A loop starts blank,
+        // Types line by line. Each line is anchored to its own fixed left edge
+        // so revealed glyphs don't jitter as more characters appear.
+        // One frame is a still of the finished text. A loop starts blank,
         // reveals through 55%, holds through 90%, then goes blank again so
-        // the last frame matches frame 0. phase * totalFrames is `f`, so the
-        // old cursor test was always even and the caret never blinked.
-        if (totalFrames === 1) {
-          ctx.fillText(text, startX, HALF)
-          break
-        }
-        if (phase === 0 || phase >= 0.9) break
-        const reveal = phase <= 0.55 ? phase / 0.55 : 1
-        const shown = Math.min(text.length, Math.floor(reveal * text.length))
-        const visible = text.slice(0, shown)
-        ctx.fillText(visible, startX, HALF)
-        const cursorOn = Math.floor(f / 2) % 2 === 0
-        if (cursorOn) {
-          const visW = ctx.measureText(visible).width
-          ctx.fillText('▌', startX + visW, HALF)
+        // the last frame matches frame 0.
+        if (totalFrames > 1 && (phase === 0 || phase >= 0.9)) break
+        const lines = typed!.lines
+        const total = lines.reduce((a, ln) => a + ln.text.length, 0)
+        let left = totalFrames === 1 ? total : Math.floor(Math.min(1, phase / 0.55) * total)
+        ctx.textAlign = 'left'
+        for (const ln of lines) {
+          setFont(ctx, weight, ln.size, family, l.letterSpacing)
+          const startX = HALF - (ctx.measureText(ln.text).width - l.letterSpacing) / 2
+          const visible = ln.text.slice(0, left)
+          left -= visible.length
+          paint(ctx, visible, startX, HALF + ln.y, opts.color, l, ln.size)
+          // Blinking cursor after the last revealed character, then stop.
+          if (totalFrames > 1 && (left === 0 || visible.length < ln.text.length)) {
+            if (Math.floor(f / 2) % 2 === 0) paint(ctx, '▌', startX + ctx.measureText(visible).width, HALF + ln.y, opts.color, l, ln.size)
+            break
+          }
         }
         break
       }
 
       case 'glow': {
-        // Soft halo: stack three blurred passes (decreasing radius) to build a
-        // smooth bloom, then draw the crisp glyph on top WITHOUT shadow so the
-        // letterforms stay sharp through JPEG compression.
+        // Soft halo: two blurred passes, then a crisp pass without shadow so
+        // the letterforms stay sharp through JPEG compression.
         const pulse = 0.5 + 0.5 * Math.sin(phase * Math.PI * 2)
+        const halo = { ...l, outline: 0, shadow: false }
         ctx.save()
         ctx.shadowColor = opts.color
         ctx.shadowBlur = 18 + pulse * 22
-        drawCenteredLines(ctx, fit.lines, fit.size, opts.color)
+        drawLines(ctx, fit, halo, family, weight, opts.color)
         ctx.shadowBlur = 8 + pulse * 12
-        drawCenteredLines(ctx, fit.lines, fit.size, opts.color)
+        drawLines(ctx, fit, halo, family, weight, opts.color)
         ctx.restore()
-        // Crisp top pass, no shadow.
-        drawCenteredLines(ctx, fit.lines, fit.size, opts.color)
-        break
-      }
-
-      case 'wave': {
-        // Each letter rides a sine. Pre-measure widths once, then position each
-        // glyph with textAlign='center' at its mid-x to avoid kerning drift.
-        const text = opts.text || ' '
-        const lineSize = Math.min(fit.size, 160)
-        ctx.font = `${opts.fontWeight} ${lineSize}px ${opts.fontFamily}`
-        ctx.textBaseline = 'middle'
-        ctx.fillStyle = opts.color
-        const widths: number[] = []
-        let total = 0
-        for (let i = 0; i < text.length; i++) {
-          const w = ctx.measureText(text[i]).width
-          widths.push(w)
-          total += w
-        }
-        // Amplitude scales with line height for visual punch, but stays inside
-        // the circular safe area so descenders never clip the rim.
-        const amp = Math.min(38, Math.max(20, lineSize * 0.28))
-        let x = HALF - total / 2
-        ctx.textAlign = 'center'
-        for (let i = 0; i < text.length; i++) {
-          const cw = widths[i]
-          const dy = Math.sin(phase * Math.PI * 2 + i * 0.7) * amp
-          ctx.fillText(text[i], x + cw / 2, HALF + dy)
-          x += cw
-        }
+        drawLines(ctx, fit, l, family, weight, opts.color)
         break
       }
     }

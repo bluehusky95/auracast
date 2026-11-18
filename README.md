@@ -51,7 +51,7 @@ That's it. The image appears on your badge in seconds.
 | ✨ | **30 animated patterns** | Matrix Rain, Aurora Ribbons, Fireworks, Clock Face, Flow Field, Reaction Diffusion, Painted Base, Voronoi Crystals, Kaleidoscope, Danmaku, and more. Generated in the browser as looping clips. |
 | 🖼️ | **Image upload** | Drag-and-drop JPEG, PNG, or WebP. Auto-cropped and fitted to the badge's circular 368x368 display. |
 | 🎞️ | **GIF import** | Drop an animated GIF: frames are decoded, circular-cropped, and packed as a looping MJPEG animation on the badge. |
-| 🔤 | **Text effects** | Static, marquee, rainbow, blink, bounce, typewriter, glow, and wave. Custom colors and fonts. |
+| 🔤 | **Text effects** | Static, marquee, rainbow, blink, bounce, typewriter, glow, and wave. Custom colors and fonts, multiple lines with their own sizes, auto or fixed size, line and letter spacing, top/middle/bottom position, outline and shadow. Lines are fitted to the round screen. |
 | 🎬 | **Video clips** | Trim MP4/MOV clips to fit the badge's 900 KB storage. Frame-by-frame preview before sending. |
 | 📱 | **QR codes** | High-contrast circular QR codes that scan right off the badge. |
 | 🖼️ | **Image sequences** | Multi-frame slideshows that loop on-device. |

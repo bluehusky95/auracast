@@ -7,6 +7,8 @@
   }
   import { MAX_UPLOAD_BYTES } from './image-processing'
   import FrameRateControls from './FrameRateControls.svelte'
+  import SegmentedButton from './m3/SegmentedButton.svelte'
+  import { defaultTextLayout, type TextLayout, type VAlign } from '../text-layout'
 
   interface Props {
     isWriting: boolean
@@ -19,6 +21,7 @@
     textBackground: string
     textFps: number
     textFrames: number
+    textLayout: TextLayout
     onGeneratePreview: () => void
     onGenerateStill: () => void
   }
@@ -32,6 +35,7 @@
     textBackground = $bindable(),
     textFps = $bindable(),
     textFrames = $bindable(),
+    textLayout = $bindable(),
     onGeneratePreview, onGenerateStill,
   }: Props = $props()
 
@@ -43,6 +47,27 @@
     { label: 'Warning yellow',  fg: '#ffe23f', bg: '#1a1300' },
     { label: 'Sunset orange',   fg: '#ff7a3f', bg: '#1a0a00' },
   ]
+
+  // Same font and weight App uses to render, so the size hint matches the output.
+  let laid = $derived(TextGen.measureTextLayout(
+    text, (TEXT_FONTS.find((f) => f.id === textFontId) ?? TEXT_FONTS[0]).stack, 800, textLayout,
+  ))
+  const ONE_LINE_EFFECTS = new Set(['marquee'])
+  const POSITIONS: { value: VAlign; label: string }[] = [
+    { value: 'top', label: 'Top' }, { value: 'middle', label: 'Middle' }, { value: 'bottom', label: 'Bottom' },
+  ]
+
+  function setAuto(on: boolean) {
+    // Turning auto off starts the slider at the size auto had picked.
+    if (!on) textLayout.size = Math.round(laid.baseSize)
+    textLayout.autoSize = on
+  }
+  function setScale(i: number, v: number) {
+    const next = [...textLayout.lineScale]
+    for (let k = next.length; k < i; k++) next[k] = 100
+    next[i] = v
+    textLayout.lineScale = next
+  }
 
   let selectedEffectDef = $derived(TEXT_EFFECTS.find(e => e.id === textEffect) ?? TEXT_EFFECTS[0])
   let isStatic = $derived(selectedEffectDef.id === 'static')
@@ -64,7 +89,7 @@
   $effect(() => {
     if (isWriting || isGeneratingPreview || isGeneratingPattern) return
     if (!text.trim() && textEffect !== 'static') return
-    const sig = `${text}|${textEffect}|${textFontId}|${textColor}|${textBackground}|${textFrames}|${textFps}`
+    const sig = `${text}|${textEffect}|${textFontId}|${textColor}|${textBackground}|${textFrames}|${textFps}|${JSON.stringify(textLayout)}`
     if (sig === lastSig) return
     const t = setTimeout(() => {
       lastSig = sig
@@ -85,16 +110,17 @@
 <div class="flex flex-col gap-5">
   <label class="flex flex-col gap-2">
     <span class="text-label-md text-on-surface-variant">Text</span>
-    <input
-      type="text"
+    <textarea
       bind:value={text}
       placeholder="Hello world"
-      maxlength="80"
+      maxlength="120"
+      rows="3"
       autocomplete="off"
       autocapitalize="sentences"
-      enterkeyhint="done"
       disabled={isWriting}
-    />
+      class="resize-y"
+    ></textarea>
+    <span class="text-body-sm text-on-surface-variant">Press Enter for a new line.{ONE_LINE_EFFECTS.has(textEffect) ? ' Marquee scrolls everything as one line.' : ''}</span>
   </label>
 
   <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -131,6 +157,64 @@
       </select>
     </label>
   </div>
+
+  <section class="flex flex-col gap-4 rounded-2xl border border-outline-variant p-4" aria-label="Text layout">
+    <div class="flex flex-wrap items-center gap-x-5 gap-y-3">
+      <label class="flex items-center gap-2 text-label-md">
+        <input type="checkbox" checked={textLayout.autoSize} onchange={(e) => setAuto(e.currentTarget.checked)} disabled={isWriting} />
+        Auto size
+      </label>
+      <label class="flex items-center gap-2 text-label-md flex-1 min-w-[220px]">
+        Size
+        <input type="range" min="12" max="200" bind:value={textLayout.size} disabled={isWriting || textLayout.autoSize} class="flex-1 accent-[var(--md-sys-color-primary)]" />
+        <span class="w-14 text-right tabular-nums">{textLayout.autoSize ? Math.round(laid.baseSize) : textLayout.size} px</span>
+      </label>
+    </div>
+    {#if !textLayout.autoSize && !laid.fits}
+      <p class="text-label-md text-error m-0" role="status">Text runs off the round screen. Make it smaller or shorter, or turn on Auto size.</p>
+    {/if}
+
+    {#if laid.lines.length > 1}
+      <div class="flex flex-col gap-2">
+        <span class="text-label-md text-on-surface-variant">Size of each line</span>
+        {#each laid.lines as ln, i}
+          <label class="flex items-center gap-2 text-label-md">
+            <span class="w-28 truncate" title={ln.text}>{i + 1}. {ln.text.trim() || '(blank)'}</span>
+            <input type="range" min="30" max="150" step="5" value={textLayout.lineScale[i] ?? 100} oninput={(e) => setScale(i, +e.currentTarget.value)} disabled={isWriting} class="flex-1 accent-[var(--md-sys-color-primary)]" aria-label="Line {i + 1} size" />
+            <span class="w-12 text-right tabular-nums">{textLayout.lineScale[i] ?? 100}%</span>
+          </label>
+        {/each}
+      </div>
+    {/if}
+
+    <div class="grid sm:grid-cols-2 gap-x-6 gap-y-3">
+      <label class="flex items-center gap-2 text-label-md">
+        <span class="w-24">Line spacing</span>
+        <input type="range" min="0.8" max="2" step="0.05" bind:value={textLayout.lineSpacing} disabled={isWriting} class="flex-1 accent-[var(--md-sys-color-primary)]" />
+        <span class="w-10 text-right tabular-nums">{textLayout.lineSpacing.toFixed(2)}</span>
+      </label>
+      <label class="flex items-center gap-2 text-label-md">
+        <span class="w-24">Letter spacing</span>
+        <input type="range" min="-4" max="24" bind:value={textLayout.letterSpacing} disabled={isWriting} class="flex-1 accent-[var(--md-sys-color-primary)]" />
+        <span class="w-10 text-right tabular-nums">{textLayout.letterSpacing}</span>
+      </label>
+      <label class="flex items-center gap-2 text-label-md">
+        <span class="w-24">Outline</span>
+        <input type="range" min="0" max="12" bind:value={textLayout.outline} disabled={isWriting} class="flex-1 accent-[var(--md-sys-color-primary)]" />
+        <span class="w-10 text-right tabular-nums">{textLayout.outline}</span>
+      </label>
+      <div class="flex items-center gap-5 text-label-md">
+        <label class="flex items-center gap-2"><input type="checkbox" bind:checked={textLayout.shadow} disabled={isWriting} /> Shadow</label>
+        <label class="flex items-center gap-2">Outline &amp; shadow colour <input type="color" bind:value={textLayout.edgeColor} disabled={isWriting} /></label>
+      </div>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-3">
+      <span class="text-label-md text-on-surface-variant">Position</span>
+      <SegmentedButton segments={POSITIONS} bind:value={textLayout.vAlign} name="Vertical position" />
+      <button type="button" class="ml-auto text-label-md text-primary underline-offset-2 hover:underline disabled:opacity-50" disabled={isWriting} onclick={() => { textLayout = defaultTextLayout() }}>Reset layout</button>
+    </div>
+  </section>
 
   <div class="flex flex-wrap gap-2">
     {#each PRESETS as p}
