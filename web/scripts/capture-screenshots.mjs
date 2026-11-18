@@ -2,6 +2,7 @@
  * Refresh docs/screenshots from the running app.
  *
  *   AUDIT_URL=https://127.0.0.1:5173/ node scripts/capture-screenshots.mjs
+ *   (add CHROMIUM_PATH=/path/to/chrome to use an installed browser)
  *
  * Sizes match the files already in the README:
  *   hero / patterns / text-mode  1280x900
@@ -175,7 +176,8 @@ async function openFresh(browser, width, height, scale, scheme) {
 }
 
 const ONLY = process.env.ONLY || ''
-const browser = await chromium.launch()
+// CHROMIUM_PATH lets you use an already-installed Chrome/Chromium build.
+const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {})
 
 if (ONLY === 'logs') {
   {

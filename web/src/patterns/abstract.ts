@@ -984,7 +984,7 @@ export async function generateDanmaku(opts: PatternOptions): Promise<Uint8Array[
   const [canvas, ctx] = createCanvas()
   const frames: Uint8Array[] = []
 
-  const text = 'AURACAST'
+  const text = 'BADGECAST'
   const fontSize = 64
   const fontFamily = 'monospace'
 

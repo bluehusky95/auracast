@@ -156,10 +156,12 @@
   })
 </script>
 
+<!-- relative: stack above the card's absolutely positioned emoji, which then
+     only shows while the preview loads or when previews are off. -->
 <canvas
   bind:this={canvas}
   width={48}
   height={48}
-  class="w-10 h-10 rounded-md {frames.length > 0 && animate ? 'opacity-100' : 'opacity-0'} transition-opacity duration-300"
+  class="relative w-10 h-10 rounded-md {frames.length > 0 && animate ? 'opacity-100' : 'opacity-0'} transition-opacity duration-300"
   aria-hidden="true"
 ></canvas>

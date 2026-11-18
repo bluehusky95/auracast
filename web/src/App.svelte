@@ -355,7 +355,7 @@
   let gifBusy = $state(false)
 
   // Text mode state
-  let text = $state(s(saved.text, 'AURA ON'))
+  let text = $state(s(saved.text, 'BADGE ON'))
   let textEffect: TextEffect = $state((saved.textEffect ?? 'rainbow') as TextEffect)
   let textFontId = $state(s(saved.textFontId, 'sansbold'))
   let textColor = $state(s(saved.textColor, '#f5f7ff'))
