@@ -21,7 +21,9 @@ const app = mount(App, {
 // Only in production builds (dev SW + Vite HMR don't play nice).
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {
+    // BASE_URL keeps the worker (and its scope) inside the folder the app is
+    // served from, e.g. /badgecast/ on pupblue.com, not the site's root.
+    navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => {
       // Non-fatal; app works without SW.
     })
   })

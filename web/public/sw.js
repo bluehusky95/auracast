@@ -2,15 +2,21 @@
  * BadgeCast service worker.
  *
  * Strategy:
- *   - Precache the app shell (HTML + bundled JS/CSS) on install.
- *   - Cache-first for hashed assets in /assets/* (immutable, content-hashed).
+ *   - Precache the app shell (HTML) on install.
+ *   - Cache-first for hashed assets in <base>/assets/* (immutable, content-hashed).
  *   - Network-first for the navigation HTML (so deploys are picked up).
  *   - Bypass everything else (Bluetooth has no HTTP layer; the HTTP bridge
  *     calls localhost APIs that should never be cached).
+ *
+ * Everything is relative to the worker's own folder (its scope), so the app
+ * can live in a subfolder of another site (pupblue.com/badgecast/). Caches
+ * are shared by the whole site, so this worker only ever deletes its own.
  */
 
-const VERSION = 'badgecast-v1';
-const APP_SHELL = ['/', '/index.html'];
+const PREFIX = 'badgecast-';
+const VERSION = PREFIX + 'v2';
+const BASE = new URL(self.registration.scope).pathname; // e.g. "/" or "/badgecast/"
+const APP_SHELL = [BASE, BASE + 'index.html'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -21,7 +27,8 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k))),
+      // Only this app's old versions (and the pre-rename AuraCast cache).
+      Promise.all(keys.filter((k) => (k.startsWith(PREFIX) || k.startsWith('auracast-')) && k !== VERSION).map((k) => caches.delete(k))),
     ).then(() => self.clients.claim()),
   );
 });
@@ -33,8 +40,8 @@ self.addEventListener('fetch', (event) => {
   // Same-origin only; never cache the local Python bridge or third-party CDNs.
   if (url.origin !== self.location.origin) return;
 
-  // Hashed bundles under /assets/ are immutable: cache-first.
-  if (url.pathname.startsWith('/assets/')) {
+  // Hashed bundles under <base>/assets/ are immutable: cache-first.
+  if (url.pathname.startsWith(BASE + 'assets/')) {
     event.respondWith(
       caches.open(VERSION).then(async (cache) => {
         const hit = await cache.match(req);
@@ -53,9 +60,9 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(req).then((res) => {
         const copy = res.clone();
-        caches.open(VERSION).then((c) => c.put('/', copy)).catch(() => {});
+        caches.open(VERSION).then((c) => c.put(BASE, copy)).catch(() => {});
         return res;
-      }).catch(() => caches.match('/').then((m) => m || caches.match('/index.html'))),
+      }).catch(() => caches.match(BASE).then((m) => m || caches.match(BASE + 'index.html'))),
     );
   }
 });
