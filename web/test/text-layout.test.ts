@@ -1,6 +1,6 @@
 // Run: node test/text-layout.test.ts
 import assert from 'node:assert/strict'
-import { layoutText, defaultTextLayout } from '../src/text-layout.ts'
+import { layoutText, layoutRim, defaultTextLayout } from '../src/text-layout.ts'
 
 const R = 170
 const measure = (t: string, s: number) => t.length * s * 0.6 // fake monospace font
@@ -48,3 +48,18 @@ r = layoutText('one two three four five six', L({ autoSize: false, size: 40 }), 
 assert.ok(r.lines.length > 1 && r.fits)
 
 console.log('text-layout: ok')
+
+// Curved edge text: first line on top arc, last on bottom arc, middle straight.
+const rim = layoutRim('BLUE\nReg Lead\nMEGAPLEX THEATRES', L({ rim: true }), R, measure)
+assert.deepEqual(rim.lines.map((l) => l.arc ?? 'mid'), ['top', 'mid', 'bottom'])
+assert.ok(rim.fits)
+for (const l of rim.lines.filter((l) => l.arc)) {
+  assert.ok(measure(l.text, l.size) / l.radius! <= Math.PI * 0.85 + 1e-9, `arc too wide: ${l.text}`)
+  assert.ok(l.radius! + l.size * 0.55 <= R + 1e-9, 'arc inside circle')
+}
+// The middle line stays clear of the arcs.
+const mid = rim.lines[1]
+assert.ok(Math.abs(mid.y) + mid.size * 0.55 < rim.lines[0].radius! - rim.lines[0].size * 0.55)
+// Fixed size that wraps past half the circle is reported.
+assert.equal(layoutRim('A VERY LONG LINE OF TEXT', L({ rim: true, autoSize: false, size: 60 }), R, measure).fits, false)
+console.log('text-layout rim: ok')

@@ -23,18 +23,23 @@ export interface TextLayout {
   shadow: boolean
   /** Colour for the outline and shadow. */
   edgeColor: string
+  /** Curve the first line along the top edge and the last along the bottom. */
+  rim: boolean
 }
 
 export const defaultTextLayout = (): TextLayout => ({
   autoSize: true, size: 72, lineScale: [], lineSpacing: 1.15, letterSpacing: 0,
-  vAlign: 'middle', outline: 0, shadow: false, edgeColor: '#000000',
+  vAlign: 'middle', outline: 0, shadow: false, edgeColor: '#000000', rim: false,
 })
 
 export const MAX_LINES = 6
 /** Half the glyph box height as a fraction of the font size. */
 const HALF_GLYPH = 0.55
+/** Widest arc auto size aims for (about 150 degrees). */
+const MAX_ARC = Math.PI * 0.85
 
-export interface PlacedLine { text: string; size: number; y: number }
+/** A curved line sits on a circle of `radius` (glyph centres) along the top or bottom. */
+export interface PlacedLine { text: string; size: number; y: number; arc?: 'top' | 'bottom'; radius?: number }
 export interface LaidOut { lines: PlacedLine[]; fits: boolean; baseSize: number }
 
 /** width(text, sizePx) in px, including letter spacing. */
@@ -123,4 +128,35 @@ export function layoutText(input: string | string[], l: TextLayout, r: number, m
     if (best) return best
   }
   return place(typed ?? [text.slice(0, 24)], 10, l, r, measure, pad)
+}
+
+/**
+ * Curved layout: line 1 follows the top edge, the last line (if there are two
+ * or more) follows the bottom edge reading left to right, and any lines in
+ * between sit straight in the middle.
+ */
+export function layoutRim(text: string, l: TextLayout, r: number, measure: Measure): LaidOut {
+  const lines = text.split('\n').slice(0, MAX_LINES)
+  const arcLine = (t: string, i: number, side: 'top' | 'bottom'): PlacedLine => {
+    let size = l.size * scaleOf(l, i)
+    if (l.autoSize) {
+      size = Math.min(64, r * 0.32) * scaleOf(l, i)
+      while (size > 8 && measure(t, size) / (r - size * HALF_GLYPH) > MAX_ARC) size -= 1
+    }
+    const radius = r - size * HALF_GLYPH
+    return { text: t, size, y: side === 'top' ? -radius : radius, arc: side, radius }
+  }
+  const arcFits = (p: PlacedLine) => measure(p.text, p.size) / p.radius! <= Math.PI
+  const top = arcLine(lines[0], 0, 'top')
+  const bottom = lines.length > 1 ? arcLine(lines[lines.length - 1], lines.length - 1, 'bottom') : null
+  const out = [top]
+  let fits = arcFits(top) && (!bottom || arcFits(bottom))
+  if (lines.length > 2) {
+    const band = Math.max(top.size, bottom!.size) * 1.15
+    const mid = layoutText(lines.slice(1, -1), { ...l, vAlign: 'middle', lineScale: l.lineScale.slice(1) }, r - band, measure)
+    out.push(...mid.lines)
+    fits &&= mid.fits
+  }
+  if (bottom) out.push(bottom)
+  return { lines: out, fits, baseSize: top.size / scaleOf(l, 0) }
 }

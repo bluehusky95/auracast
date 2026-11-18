@@ -141,6 +141,7 @@
     textFps?: number
     textFrames?: number
     textLayout?: Partial<TextLayout>
+    textPages?: string[]
     imageBackdropColor?: string
     imagePreviewMode?: PreviewMode
     sequencePreviewMode?: PreviewMode
@@ -361,6 +362,10 @@
     ...defaultTextLayout(),
     ...(saved.textLayout && typeof saved.textLayout === 'object' ? saved.textLayout : {}),
   })
+  // Extra messages that take turns with `text` (up to 3).
+  let textPages: string[] = $state(Array.isArray(saved.textPages) ? saved.textPages.filter((p) => typeof p === 'string').slice(0, 3) : [])
+  // Static text with extra messages is a slideshow, so it goes out as an animation.
+  let textIsStill = $derived(textEffect === 'static' && !textPages.some((p) => p.trim()))
   let textAutoSignature = $state('')
 
   let aviPreviewFrames: ImageBitmap[] = $state([])
@@ -842,6 +847,7 @@
       textFps,
       textFrames,
       textLayout,
+      textPages,
       colorScheme,
       selectedPatternId: selectedPattern?.id,
       patternOutputMode,
@@ -1248,7 +1254,7 @@
   }
 
   async function generateTextBytes(): Promise<{ bytes: Uint8Array; isStill: boolean }> {
-    const isStill = textEffect === 'static'
+    const isStill = textIsStill
     const textGen = await loadTextGen()
     const frames = await textGen.generateTextFrames({
       text,
@@ -1260,6 +1266,7 @@
       frames: isStill ? 1 : textFrames,
       fps: textFps,
       layout: $state.snapshot(textLayout),
+      pages: $state.snapshot(textPages),
     })
     if (isStill) {
       return { bytes: frames[0], isStill: true }
@@ -1498,7 +1505,7 @@
         avi = built.avi
         label = built.label
       } else if (uploadMode === 'text') {
-        if (textEffect === 'static') {
+        if (textIsStill) {
           // For static text, route through the still-image path instead.
           await generateTextStill()
           return
@@ -1614,7 +1621,7 @@
     if (libraryPayload) return isJpeg(libraryPayload) ? 'image' : 'video'
     if (uploadMode === 'qr') return 'image'
     if (uploadMode === 'gif' || uploadMode === 'pixel' || uploadMode === 'arcade') return 'video'
-    if (uploadMode === 'text') return textEffect === 'static' ? 'image' : 'pattern'
+    if (uploadMode === 'text') return textIsStill ? 'image' : 'pattern'
     if (preparedIsStillImage) return 'image'
     return uploadMode
   }
@@ -2307,7 +2314,7 @@
                     </PreviewSurface>
                   {/if}
                 {:else if uploadMode === 'text'}
-                  {#if textEffect === 'static' && previewUrl}
+                  {#if textIsStill && previewUrl}
                     <PreviewSurface size={260} busy={isGeneratingPreview}>
                       <img src={previewUrl} alt="Text" width="368" height="368" decoding="async" />
                     </PreviewSurface>
@@ -2531,6 +2538,7 @@
                     bind:textFps
                     bind:textFrames
                     bind:textLayout
+                    bind:textPages
                     onGeneratePreview={generatePreview}
                     onGenerateStill={generateTextStill}
                   />

@@ -8,6 +8,7 @@
   import { MAX_UPLOAD_BYTES } from './image-processing'
   import FrameRateControls from './FrameRateControls.svelte'
   import SegmentedButton from './m3/SegmentedButton.svelte'
+  import { Button, IconButton } from './m3'
   import { defaultTextLayout, type TextLayout, type VAlign } from '../text-layout'
 
   interface Props {
@@ -22,6 +23,8 @@
     textFps: number
     textFrames: number
     textLayout: TextLayout
+    /** Extra messages that take turns with `text`. */
+    textPages: string[]
     onGeneratePreview: () => void
     onGenerateStill: () => void
   }
@@ -36,6 +39,7 @@
     textFps = $bindable(),
     textFrames = $bindable(),
     textLayout = $bindable(),
+    textPages = $bindable(),
     onGeneratePreview, onGenerateStill,
   }: Props = $props()
 
@@ -52,7 +56,6 @@
   let laid = $derived(TextGen.measureTextLayout(
     text, (TEXT_FONTS.find((f) => f.id === textFontId) ?? TEXT_FONTS[0]).stack, 800, textLayout,
   ))
-  const ONE_LINE_EFFECTS = new Set(['marquee'])
   const POSITIONS: { value: VAlign; label: string }[] = [
     { value: 'top', label: 'Top' }, { value: 'middle', label: 'Middle' }, { value: 'bottom', label: 'Bottom' },
   ]
@@ -70,7 +73,10 @@
   }
 
   let selectedEffectDef = $derived(TEXT_EFFECTS.find(e => e.id === textEffect) ?? TEXT_EFFECTS[0])
-  let isStatic = $derived(selectedEffectDef.id === 'static')
+  let pageCount = $derived(textPages.filter((p) => p.trim()).length)
+  // Static with extra messages becomes a slideshow, so it needs frames too.
+  let isStatic = $derived(selectedEffectDef.id === 'static' && pageCount === 0)
+  let secsEach = $derived((textFrames / (1 + pageCount) / textFps).toFixed(1))
 
   function estimatedSize(): number {
     const bpf = selectedEffectDef.bytesPerFrame
@@ -89,7 +95,7 @@
   $effect(() => {
     if (isWriting || isGeneratingPreview || isGeneratingPattern) return
     if (!text.trim() && textEffect !== 'static') return
-    const sig = `${text}|${textEffect}|${textFontId}|${textColor}|${textBackground}|${textFrames}|${textFps}|${JSON.stringify(textLayout)}`
+    const sig = `${text}|${textEffect}|${textFontId}|${textColor}|${textBackground}|${textFrames}|${textFps}|${JSON.stringify(textLayout)}|${JSON.stringify(textPages)}`
     if (sig === lastSig) return
     const t = setTimeout(() => {
       lastSig = sig
@@ -109,7 +115,7 @@
 
 <div class="flex flex-col gap-5">
   <label class="flex flex-col gap-2">
-    <span class="text-label-md text-on-surface-variant">Text</span>
+    <span class="text-label-md text-on-surface-variant">{textPages.length ? 'Message 1' : 'Text'}</span>
     <textarea
       bind:value={text}
       placeholder="Hello world"
@@ -120,8 +126,26 @@
       disabled={isWriting}
       class="resize-y"
     ></textarea>
-    <span class="text-body-sm text-on-surface-variant">Press Enter for a new line.{ONE_LINE_EFFECTS.has(textEffect) ? ' Marquee scrolls everything as one line.' : ''}</span>
+    <span class="text-body-sm text-on-surface-variant">Press Enter for a new line.{textEffect === 'marquee' ? (textLayout.rim ? ' Marquee spins the curved lines.' : ' Marquee scrolls everything as one line.') : ''}</span>
   </label>
+
+  {#each textPages as _, i}
+    <div class="flex gap-2 items-end">
+      <label class="flex flex-col gap-2 flex-1">
+        <span class="text-label-md text-on-surface-variant">Message {i + 2}</span>
+        <textarea bind:value={textPages[i]} placeholder="Another message" maxlength="120" rows="2" autocomplete="off" disabled={isWriting} class="resize-y"></textarea>
+      </label>
+      <IconButton icon="delete" ariaLabel="Remove message {i + 2}" disabled={isWriting} onclick={() => { textPages = textPages.filter((_, k) => k !== i) }} />
+    </div>
+  {/each}
+  <div class="flex flex-wrap items-center gap-3 -mt-2">
+    {#if textPages.length < 3}
+      <Button variant="text" size="sm" icon="add" disabled={isWriting} onclick={() => { textPages = [...textPages, ''] }}>Add message</Button>
+    {/if}
+    {#if pageCount}
+      <span class="text-body-sm text-on-surface-variant">Messages take turns, about {secsEach} s each. Change frames or speed below to adjust.</span>
+    {/if}
+  </div>
 
   <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
     {#each TEXT_EFFECTS as eff}
@@ -159,6 +183,10 @@
   </div>
 
   <section class="flex flex-col gap-4 rounded-2xl border border-outline-variant p-4" aria-label="Text layout">
+    <label class="flex items-center gap-2 text-label-md">
+      <input type="checkbox" bind:checked={textLayout.rim} disabled={isWriting} />
+      Curve the first line along the top edge (and the last line along the bottom)
+    </label>
     <div class="flex flex-wrap items-center gap-x-5 gap-y-3">
       <label class="flex items-center gap-2 text-label-md">
         <input type="checkbox" checked={textLayout.autoSize} onchange={(e) => setAuto(e.currentTarget.checked)} disabled={isWriting} />
@@ -210,8 +238,10 @@
     </div>
 
     <div class="flex flex-wrap items-center gap-3">
-      <span class="text-label-md text-on-surface-variant">Position</span>
-      <SegmentedButton segments={POSITIONS} bind:value={textLayout.vAlign} name="Vertical position" />
+      {#if !textLayout.rim}
+        <span class="text-label-md text-on-surface-variant">Position</span>
+        <SegmentedButton segments={POSITIONS} bind:value={textLayout.vAlign} name="Vertical position" />
+      {/if}
       <button type="button" class="ml-auto text-label-md text-primary underline-offset-2 hover:underline disabled:opacity-50" disabled={isWriting} onclick={() => { textLayout = defaultTextLayout() }}>Reset layout</button>
     </div>
   </section>
