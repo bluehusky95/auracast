@@ -53,7 +53,7 @@ That's it. The image appears on your badge in seconds.
 | 🎞️ | **GIF import** | Drop an animated GIF: frames are decoded, circular-cropped, and packed as a looping MJPEG animation on the badge. |
 | 🔤 | **Text effects** | Static, marquee, rainbow, blink, bounce, typewriter, glow, and wave. Custom colors and fonts, multiple lines with their own sizes, auto or fixed size, line and letter spacing, top/middle/bottom position, outline and shadow. Lines are fitted to the round screen. Curve the first and last lines along the edge, and add up to 4 messages that take turns. |
 | 🎬 | **Video clips** | Trim MP4/MOV clips to fit the badge's 900 KB storage. Frame-by-frame preview before sending. |
-| 📱 | **QR codes** | High-contrast circular QR codes that scan right off the badge. |
+| 📱 | **QR codes** | High-contrast circular QR codes that scan right off the badge: a link, a contact card (people save you to their phone), Wi-Fi details, or plain text. |
 | 🖼️ | **Image sequences** | Multi-frame slideshows that loop on-device. |
 | 🔋 | **Battery + charging** | Live battery percentage with charging state indicator. |
 | 🔆 | **Brightness control** | Adjust badge screen brightness via slider. |

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { formatDuration, formatBytes } from './lib/utils'
+  import { formatDuration, formatBytes, sleep } from './lib/utils'
+  import { explainError, isRetryable, type Problem } from './lib/friendly-errors'
   import {
     MAX_UPLOAD_BYTES,
     E87_IMAGE_WIDTH,
@@ -379,6 +380,8 @@
   let preparedIsStillImage = $state(false)
   let aviPlayer: AviPlayer | null = $state(null)
   let helpOpen = $state(false)
+  // Last connect/send failure in plain words, shown under the Send button.
+  let problem: Problem | null = $state(null)
 
   // ─── Theme (light / dark / system) ─────────────────────────────────
   // Default is the OS preference; clicking the toggle swaps light↔dark.
@@ -676,6 +679,7 @@
         if (brightness !== null) brightnessLevel = brightness
       } catch { /* best effort */ }
       conn = nextConn
+      problem = null
       status = `Connected: ${nextConn.device.name ?? 'Unknown device'}`
 
       // Auto-reconnect: when the GATT server drops the link, clear our
@@ -691,8 +695,9 @@
         }, { once: true })
       } catch { /* best effort */ }
     } catch (error) {
-      status = `Connection failed: ${(error as Error).message}`
-      log(status)
+      problem = explainError((error as Error).message)
+      status = `Connection failed: ${problem.title}`
+      log(`Connection failed: ${(error as Error).message}`)
       conn = null
       batteryLevel = null
       batteryUpdatedAt = ''
@@ -1845,7 +1850,7 @@
       return
     }
     if (!libraryPayload && uploadMode === 'qr' && !qrUrl.trim()) {
-      status = 'Enter a URL for QR mode.'
+      status = 'Fill in the QR code details first.'
       return
     }
     if (!libraryPayload && uploadMode === 'text' && !text.trim()) {
@@ -1934,28 +1939,49 @@
         return
       }
 
-      await writeFileE87({
-        conn: conn!,
-        payload,
-        uploadMode: uploadModeForDevice,
-        deviceLanguage,
-        interChunkDelayMs,
-        cancelRequested: () => cancelRequested,
-        onProgress: (bytesSent, totalBytes, chunksSent, totalChunks) => {
-          sentBytesForEta = bytesSent
-          const pct = Math.min(100, Math.round((bytesSent / totalBytes) * 100))
-          progress = pct
-          progressLabel = `${pct}% · ${formatBytes(bytesSent)} / ${formatBytes(totalBytes)} · chunk ${chunksSent}/${totalChunks}`
-        },
-        log,
-      })
+      // A dropped link or a stall gets one more try, reconnecting first if needed.
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await writeFileE87({
+            conn: conn!,
+            payload,
+            uploadMode: uploadModeForDevice,
+            deviceLanguage,
+            interChunkDelayMs,
+            cancelRequested: () => cancelRequested,
+            onProgress: (bytesSent, totalBytes, chunksSent, totalChunks) => {
+              sentBytesForEta = bytesSent
+              const pct = Math.min(100, Math.round((bytesSent / totalBytes) * 100))
+              progress = pct
+              progressLabel = `${pct}% · ${formatBytes(bytesSent)} / ${formatBytes(totalBytes)} · chunk ${chunksSent}/${totalChunks}`
+            },
+            log,
+          })
+          break
+        } catch (error) {
+          const msg = (error as Error).message
+          if (cancelRequested || attempt >= 2 || !isRetryable(msg)) throw error
+          log(`Send failed (${msg}). Trying once more…`)
+          progress = 0
+          progressLabel = 'Connection hiccup. Trying once more…'
+          await sleep(1500)
+          if (!conn?.device.gatt?.connected) {
+            conn = null
+            await connect()
+            if (!conn) throw error
+          }
+        }
+      }
 
       progress = 100
+      problem = null
       const elapsed = formatDuration((Date.now() - uploadStartTime) / 1000)
       status = `Upload completed in ${elapsed}.`
     } catch (error) {
-      status = `Upload failed: ${(error as Error).message}`
-      log(status)
+      const msg = (error as Error).message
+      if (!cancelRequested) problem = explainError(msg)
+      status = `Upload failed: ${problem && !cancelRequested ? problem.title : msg}`
+      log(`Upload failed: ${msg}`)
       // Auto-run diagnostics so the verdict surfaces inline without the
       // user having to know about the help drawer.
       if (!hasWebBluetooth && !cancelRequested) {
@@ -2059,6 +2085,8 @@
           <M3Icon name="brightness_medium" size={18} class="text-primary" />
           <input type="range" min="0" max="100" value={brightnessLevel}
             oninput={debouncedSetBrightness}
+            aria-label="Screen brightness"
+            title="Screen brightness. Lower saves battery."
             class="w-20 h-1 accent-[var(--md-sys-color-primary)] cursor-pointer" />
           <span class="text-label-sm tabular-nums w-7 text-right">{brightnessLevel}%</span>
         </div>
@@ -2069,6 +2097,7 @@
             type="button"
             class="h-9 px-2.5 sm:px-3 inline-flex items-center gap-1.5 rounded-full bg-surface-container-high text-on-surface hover:bg-surface-container-highest transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             aria-label="Device language"
+            title="Language of the badge's own built-in text"
             aria-haspopup="menu"
             aria-expanded={languageMenuOpen}
             onclick={() => languageMenuOpen = !languageMenuOpen}
@@ -2088,7 +2117,7 @@
             >
               <div class="px-3 pt-2 pb-1">
                 <div class="text-title-sm font-semibold text-on-surface">Device language</div>
-                <div class="text-label-sm text-on-surface-variant">Used for Web Bluetooth uploads.</div>
+                <div class="text-label-sm text-on-surface-variant">The language of the badge's own built-in text. Set each time you send; your designs don't change.</div>
               </div>
 
               <button
@@ -2504,6 +2533,20 @@
                 sentBytes={sentBytesForEta}
                 totalBytes={totalBytesForEta}
               />
+
+              {#if problem && !isWriting && !isConnecting}
+                <div role="alert" class="w-full rounded-2xl border border-error/40 bg-error-container/20 p-3 flex gap-3 text-left">
+                  <span class="material-symbols-outlined text-error text-[22px] shrink-0" aria-hidden="true">error</span>
+                  <div class="flex flex-col gap-1 min-w-0">
+                    <b class="text-label-lg text-on-surface">{problem.title}</b>
+                    <p class="m-0 text-body-sm text-on-surface-variant">{problem.tip}</p>
+                    <div class="flex flex-wrap gap-1 -ml-2">
+                      <M3Button variant="text" size="sm" icon="help" onclick={() => helpOpen = true}>More help</M3Button>
+                      <M3Button variant="text" size="sm" onclick={() => problem = null}>Dismiss</M3Button>
+                    </div>
+                  </div>
+                </div>
+              {/if}
             </aside>
 
             <!-- ── Controls column ─────────────────────────────────────── -->
@@ -2681,7 +2724,25 @@
               {/if}
             </div>
 
-            <details class="help-disclosure" open>
+            {#if hasWebBluetooth}
+              <details class="help-disclosure" open>
+                <summary>
+                  <span class="material-symbols-outlined help-disclosure-icon">bluetooth_searching</span>
+                  <span class="help-disclosure-title">Can't find or connect to your badge?</span>
+                  <span class="material-symbols-outlined help-disclosure-chevron">chevron_right</span>
+                </summary>
+                <ol class="help-disclosure-list">
+                  <li><b>Wake it.</b> Press the side button once so the screen lights up. The badge stops showing up when it's asleep.</li>
+                  <li><b>Close the ZRun app</b> on your phone, or turn off your phone's Bluetooth. The badge only talks to one device at a time.</li>
+                  <li><b>Don't pair it in Bluetooth settings.</b> Connect only from this page. Your phone or computer may list it as "E87 audio"; you don't need that. If you paired it there, remove (forget) it and try again.</li>
+                  <li><b>Use a supported browser:</b> Chrome or Edge on a computer or Android phone. On iPhone or iPad, use the Bluefy browser (Safari has no Bluetooth).</li>
+                  <li><b>Pick the right name</b> in the list: it starts with <code class="bg-surface-container px-1 rounded">E87</code>, <code class="bg-surface-container px-1 rounded">E92</code>, <code class="bg-surface-container px-1 rounded">L8</code> or <code class="bg-surface-container px-1 rounded">X9</code>. Keep the badge within a few metres.</li>
+                  <li><b>Connected but nothing works?</b> The badge can get stuck after an interrupted session. Turn it off and on: hold the side button for 5 seconds, wait, then press it once.</li>
+                </ol>
+              </details>
+            {/if}
+
+            <details class="help-disclosure">
               <summary>
                 <span class="material-symbols-outlined help-disclosure-icon">touch_app</span>
                 <span class="help-disclosure-title">Wake the badge</span>
@@ -2724,7 +2785,23 @@
               <ul class="help-disclosure-list help-disclosure-list--bulleted">
                 <li><b>Stuck while transferring:</b> the badge dropped the link. Click Cancel, press the side button, then Send again.</li>
                 <li><b>"AVI exceeds limit":</b> reduce frame count or fps. Each file is kept under 900 KB. The badge stores about 970 KB, and each send uses a new filename, so older files can still fill it.</li>
-                <li><b>"Badge rejected the upload":</b> gallery is full. Clear via Zrun app (see banner above when this fires).</li>
+                <li><b>"Badge rejected the upload":</b> the badge is full. Open <b>My badge</b> and delete some files.</li>
+              </ul>
+            </details>
+
+            <details class="help-disclosure">
+              <summary>
+                <span class="material-symbols-outlined help-disclosure-icon">tune</span>
+                <span class="help-disclosure-title">What the badge settings do</span>
+                <span class="material-symbols-outlined help-disclosure-chevron">chevron_right</span>
+              </summary>
+              <ul class="help-disclosure-list help-disclosure-list--bulleted">
+                <li><b>Brightness</b> (slider in the top bar, shown when connected): how bright the screen is. Lower saves battery.</li>
+                <li><b>Device language</b> (globe icon): the language of the badge's own built-in text. AuraCast sets it each time you send. It doesn't change your designs.</li>
+                <li><b>Battery</b>: the badge's charge, read when you connect.</li>
+                <li><b>My badge</b> (memory card icon): the files stored on the badge. Download or delete them, erase everything, or set the badge's clock (needed for the clock designs).</li>
+                <li><b>Saved designs</b> (bookmark icon): designs kept in this browser so you can send them again later.</li>
+                <li><b>Side button</b>: press once to wake the badge; hold 5 seconds to turn it off.</li>
               </ul>
             </details>
 

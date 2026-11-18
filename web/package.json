@@ -17,7 +17,7 @@
     "prebuild": "npm run tokens && npm run check:no-em-dash",
     "predev": "npm run tokens",
     "check:a11y": "node test/visual/a11y-audit.mjs",
-    "test": "node test/badge-codec.test.ts && node test/text-layout.test.ts"
+    "test": "node test/badge-codec.test.ts && node test/text-layout.test.ts && node test/helpers.test.ts"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.3",
