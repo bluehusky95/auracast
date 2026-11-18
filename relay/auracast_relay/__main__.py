@@ -35,7 +35,7 @@ def _default_static() -> Path | None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="AuraCast Bluetooth relay for Safari, Firefox, and iPhone.")
+    parser = argparse.ArgumentParser(description="BadgeCast Bluetooth relay for Safari, Firefox, and iPhone.")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address. Default 127.0.0.1.")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--lan", action="store_true", help="Bind 0.0.0.0 so a phone on this Wi-Fi can connect. No password.")
@@ -53,7 +53,7 @@ def main() -> None:
     relay = Relay(BleakSession(), host=host, port=args.port, static_root=static_root, watch=not args.no_watch)
     relay.start()
     port = relay.port
-    print("[relay] AuraCast relay is up.", flush=True)
+    print("[relay] BadgeCast relay is up.", flush=True)
     print("[relay] A still image and the Painted Base loop were sent to a physical E87. Unit tests still use a simulated badge.", flush=True)
     if static_root is None:
         print("[relay] web/dist was not found. API only. Build with: cd web && npm run build", flush=True)

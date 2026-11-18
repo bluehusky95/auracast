@@ -66,7 +66,7 @@ const b64 = (b: Uint8Array) => { let s = ''; for (let i = 0; i < b.length; i += 
 const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0))
 
 export function exportLibrary(items: LibraryItem[]): Blob {
-  const data = { app: 'auracast-library', version: 1, items: items.map((i) => ({ name: i.name, createdAt: i.createdAt, data: b64(i.bytes) })) }
+  const data = { app: 'badgecast-library', version: 1, items: items.map((i) => ({ name: i.name, createdAt: i.createdAt, data: b64(i.bytes) })) }
   return new Blob([JSON.stringify(data)], { type: 'application/json' })
 }
 
@@ -75,7 +75,7 @@ export async function importFile(file: File): Promise<number> {
   if (file.size > 64 * 1024 * 1024) throw new Error('That file is too large to import.')
   if (/\.json$/i.test(file.name) || file.type === 'application/json') {
     const data = JSON.parse(await file.text())
-    if (data?.app !== 'auracast-library' || !Array.isArray(data.items)) throw new Error('Not an AuraCast library export.')
+    if (!['badgecast-library', 'auracast-library'].includes(data?.app) || !Array.isArray(data.items)) throw new Error('Not a BadgeCast library export.')
     let n = 0
     for (const it of data.items) {
       if (typeof it?.data !== 'string') continue

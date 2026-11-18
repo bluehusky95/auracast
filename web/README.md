@@ -1,4 +1,4 @@
-# AuraCast web app
+# BadgeCast web app
 
 Small Svelte 5 app to send images, video, text, patterns and QR codes to a
 Jieli-based BLE LED badge.

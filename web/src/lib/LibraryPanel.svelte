@@ -84,7 +84,7 @@
       <span class="material-symbols-outlined text-[18px]" aria-hidden="true">upload_file</span>Import
       <input type="file" accept=".json,.avi,.jpg,.jpeg,application/json,video/x-msvideo,image/jpeg" multiple class="sr-only" onchange={onImport} />
     </label>
-    <M3Button variant="text" size="sm" icon="download" disabled={!items.length} onclick={() => save(exportLibrary(items), `auracast-library-${new Date().toISOString().slice(0, 10)}.json`)}>Export all</M3Button>
+    <M3Button variant="text" size="sm" icon="download" disabled={!items.length} onclick={() => save(exportLibrary(items), `badgecast-library-${new Date().toISOString().slice(0, 10)}.json`)}>Export all</M3Button>
     {#if note}<span class="text-label-md text-on-surface-variant">{note}</span>{/if}
   </div>
   {#if error}<p class="text-label-md text-error m-0">{error}</p>{/if}

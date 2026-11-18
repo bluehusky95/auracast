@@ -1,5 +1,5 @@
 /**
- * AuraCast service worker.
+ * BadgeCast service worker.
  *
  * Strategy:
  *   - Precache the app shell (HTML + bundled JS/CSS) on install.
@@ -9,7 +9,7 @@
  *     calls localhost APIs that should never be cached).
  */
 
-const VERSION = 'auracast-v1';
+const VERSION = 'badgecast-v1';
 const APP_SHELL = ['/', '/index.html'];
 
 self.addEventListener('install', (event) => {

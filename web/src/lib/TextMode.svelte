@@ -243,7 +243,7 @@
       </div>
       <p class="m-0 text-body-sm text-on-surface-variant">
         <code class="bg-surface-container px-1 rounded">{COUNTDOWN}</code> in your text shows the time left, as it was when you sent it.
-        With updates on, AuraCast sends again while this page stays open and the badge is connected.
+        With updates on, BadgeCast sends again while this page stays open and the badge is connected.
         Use the Static effect so each update is quick. Frequent updates use more battery.
       </p>
     </section>

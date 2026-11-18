@@ -1,5 +1,5 @@
 /**
- * Barrel export for the AuraCast M3 component library.
+ * Barrel export for the BadgeCast M3 component library.
  */
 export { default as Icon } from './Icon.svelte'
 export { default as Button } from './Button.svelte'

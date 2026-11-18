@@ -27,7 +27,7 @@
   let errorMsg = $state('')
 
   // GIPHY search (opt-in: needs the user's own API key; the only request
-  // AuraCast makes off-device, and only when you search).
+  // BadgeCast makes off-device, and only when you search).
   const KEY_STORE = 'auracast.giphyKey'
   let giphyKey = $state((() => { try { return localStorage.getItem(KEY_STORE) ?? '' } catch { return '' } })())
   let giphyQuery = $state('')
@@ -135,7 +135,7 @@
     // ImageDecoder is what decodes every frame. createImageBitmap on a GIF
     // returns frame 0 only, which used to upload as a fake 10 fps still.
     if (!('ImageDecoder' in globalThis)) {
-      throw new Error('This browser cannot decode an animated GIF. Open AuraCast in Chrome, Edge, Brave, or Arc.')
+      throw new Error('This browser cannot decode an animated GIF. Open BadgeCast in Chrome, Edge, Brave, or Arc.')
     }
     return decodeWithImageDecoder(file)
   }

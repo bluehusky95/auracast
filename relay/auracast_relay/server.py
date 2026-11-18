@@ -1,4 +1,4 @@
-"""Same-origin HTTP bridge the AuraCast page already calls.
+"""Same-origin HTTP bridge the BadgeCast page already calls.
 
 GET  /api/status
 POST /api/blob          multipart fields: file, kind (still|animated)
@@ -175,12 +175,12 @@ def _static_file(root: Path, url_path: str) -> Path | None:
 
 _HELP = """<!doctype html>
 <meta charset="utf-8">
-<title>AuraCast relay</title>
+<title>BadgeCast relay</title>
 <style>
   body { font: 16px/1.45 system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; color: #142; }
   code { background: #f2f2f2; padding: 0.1rem 0.3rem; }
 </style>
-<h1>AuraCast relay</h1>
+<h1>BadgeCast relay</h1>
 <p>This process is the Bluetooth bridge. The page API is up. To use it from Safari, Firefox, or an iPhone, build the web app and restart so this server can host it:</p>
 <pre>cd web
 npm run build</pre>

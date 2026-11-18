@@ -50,7 +50,7 @@
   }
 
   import AviPlayer from './lib/AviPlayer.svelte'
-  import AuraCastLogo3D from './lib/AuraCastLogo3D.svelte'
+  import BadgeCastLogo from './lib/BadgeCastLogo.svelte'
   import UploadProgress from './lib/UploadProgress.svelte'
   import BadgeManager from './lib/BadgeManager.svelte'
   import OverlayPanel from './lib/OverlayPanel.svelte'
@@ -2194,9 +2194,9 @@
   <M3TopAppBar elevated class="!fixed !top-0 !left-0 !right-0">
     {#snippet leading()}
       <div class="flex items-center gap-2.5">
-        <AuraCastLogo3D size={40} />
+        <BadgeCastLogo size={40} />
         <div class="hidden sm:flex items-baseline gap-px text-headline-sm tracking-tight leading-none">
-          <span class="font-semibold text-on-surface">Aura</span><span class="font-semibold bg-gradient-to-r from-tertiary to-primary bg-clip-text text-transparent">Cast</span>
+          <span class="font-semibold text-on-surface">Badge</span><span class="font-semibold bg-gradient-to-r from-tertiary to-primary bg-clip-text text-transparent">Cast</span>
         </div>
       </div>
     {/snippet}
@@ -2963,7 +2963,7 @@
               </summary>
               <ul class="help-disclosure-list help-disclosure-list--bulleted">
                 <li><b>Brightness</b> (slider in the top bar, shown when connected): how bright the screen is. Lower saves battery.</li>
-                <li><b>Device language</b> (globe icon): the language of the badge's own built-in text. AuraCast sets it each time you send. It doesn't change your designs.</li>
+                <li><b>Device language</b> (globe icon): the language of the badge's own built-in text. BadgeCast sets it each time you send. It doesn't change your designs.</li>
                 <li><b>Battery</b>: the badge's charge, read when you connect.</li>
                 <li><b>My badge</b> (memory card icon): the files stored on the badge. Download or delete them, erase everything, or set the badge's clock (needed for the clock designs).</li>
                 <li><b>Saved designs</b> (bookmark icon): designs kept in this browser so you can send them again later.</li>
@@ -3020,11 +3020,23 @@
         <footer class="site-footer flex flex-col items-center gap-2 py-3 lg:py-2.5 text-center">
           <p class="m-0 flex items-center justify-center gap-2 text-label-md text-on-surface-variant">
             <span class="material-symbols-outlined text-[16px] text-primary leading-none">bolt</span>
-            <span class="font-semibold tracking-tight footer-wordmark">AuraCast</span>
+            <span class="font-semibold tracking-tight footer-wordmark">BadgeCast</span>
             <span aria-hidden="true">·</span>
-            <span>296 × 128 pixels of attitude, strapped to your chest</span>
+            <span>Your designs, on a badge on your chest</span>
           </p>
           <p class="m-0 flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-body-sm text-on-surface-variant">
+            <span>Based on</span>
+            <a
+              href="https://github.com/Manaiakalani/auracast"
+              target="_blank"
+              rel="noopener"
+              class="footer-credit"
+              aria-label="AuraCast by Manaiakalani on GitHub"
+            >
+              <span class="material-symbols-outlined text-[14px] leading-none">auto_awesome</span>
+              <span>AuraCast</span>
+            </a>
+            <span aria-hidden="true">·</span>
             <span>Protocol cracked open by</span>
             <a
               href="https://github.com/jumpingmushroom/e87_badge"
@@ -3090,7 +3102,7 @@
   :global(html) { background: #0b0d12; }
 
   /* ── Footer wordmark + credit chips ──────────────────────────────
-     Aurora-gradient AuraCast wordmark and pill-shaped credit chips
+     Aurora-gradient BadgeCast wordmark and pill-shaped credit chips
      for the two upstream projects. */
   :global(.footer-wordmark) {
     background: linear-gradient(

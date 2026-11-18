@@ -1,4 +1,4 @@
-# AuraCast Python relay
+# BadgeCast Python relay
 
 Safari, Firefox, and iPhone cannot open a Web Bluetooth connection to an E87, E92, L8, or X9 badge. This process runs on a computer that has a Bluetooth radio and speaks the badge protocol for them. The browser talks to this process over HTTP. The phone does not talk to the badge.
 

@@ -1,7 +1,7 @@
 ---
-name: AuraCast
+name: BadgeCast
 description: >-
-  AuraCast is the desktop-first, mobile-aware web companion for the E87 / L8 round
+  BadgeCast (based on AuraCast) is the desktop-first, mobile-aware web companion for the E87 / L8 round
   smart badge. It writes still images, animations, sequences, marquee text, and QR
   codes to the badge's 368 × 368 OLED over Web Bluetooth in Chromium browsers.
   Safari, Firefox, and iPhone can use the Python relay in relay/, which runs on a
@@ -279,9 +279,9 @@ layout:
     dialog-mode: "modal"
 ---
 
-# AuraCast — Look & feel
+# BadgeCast — Look & feel
 
-AuraCast is a single-product Material 3 Expressive surface in a permanent dark
+BadgeCast is a single-product Material 3 Expressive surface in a permanent dark
 mode. Imagine the badge itself: a black anodized disc that lights up with a
 neon-cyan ring when it's awake, drifting into violet during animations. The web
 app borrows exactly that vocabulary — a deep navy canvas, a bright cyan
@@ -357,7 +357,7 @@ status pills.
 The dark canvas is mostly flat. The elevation scale is M3-canonical
 (level 0 → level 5 box-shadow recipes), but in this product 80 % of surfaces
 sit at **level 0** (the chrome) or **level 1** (cards). What sells the
-"AuraCast" aesthetic is a layer of brand glow on top of elevation:
+"BadgeCast" aesthetic is a layer of brand glow on top of elevation:
 
 - The primary FAB / Send button carries `glow-primary` — a 24 px / 48 px
   cyan radial shadow that simulates the badge's lit ring.

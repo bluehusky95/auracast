@@ -1,17 +1,18 @@
 <div align="center">
 
-<img src="docs/screenshots/hero-dark.png" alt="AuraCast - Pattern picker with 30 animated patterns" width="800" />
+<img src="docs/screenshots/hero-dark.png" alt="BadgeCast - Pattern picker with 30 animated patterns" width="800" />
 
-# ✦ AuraCast
+# ✦ BadgeCast
 
 ### The open-source web app for round LED smart badges
 
 **Upload custom images, GIFs, animations, scrolling text, patterns, and QR codes: straight from your browser. No app store. No USB cable. No account.**
 
+BadgeCast is based on [AuraCast](https://github.com/Manaiakalani/auracast) and adds features ported from [Badge Studio](https://github.com/martinferreiraHCA/Badge), both MIT-licensed.
+
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Built with Svelte 5](https://img.shields.io/badge/built%20with-Svelte%205-ff3e00.svg)](https://svelte.dev)
 [![Web Bluetooth](https://img.shields.io/badge/Web%20Bluetooth-BLE-4285F4.svg)](#browser-support)
-[![GitHub Pages](https://img.shields.io/badge/live-auracast.app-00f2ff.svg)](https://manaiakalani.github.io/auracast/)
 
 </div>
 
@@ -23,16 +24,16 @@
 >
 > **E87** · **E92** · **L8** · **X9** · **LED Smart Badge** · **Anime Smart Badge** · **Anime LED Pin** · **Aura Badge** · **DIY Light Up Pin** · **Wearable Display Pin** · **Round LED Name Tag** · **Smart LED Bluetooth Pin** · **Akinokai Display Pin** · **384x384 Round Pin** · **Programmable LED Badge** · **Custom Image Pin** · **Anime LED Lapel Pin** · **HiBadge** · **Bluetooth LED Pin** · **Round OLED Badge**
 >
-> ...all use the same Jieli BLE chip and speak the same protocol. If you have one of these, **AuraCast works with it.**
+> ...all use the same Jieli BLE chip and speak the same protocol. If you have one of these, **BadgeCast works with it.**
 >
-> The stock **Zrun** app (also shipped as "LED Badge", "HiBadge", "Badgy") is buggy, ad-filled, and barely works on iOS. AuraCast is the open-source replacement.
+> The stock **Zrun** app (also shipped as "LED Badge", "HiBadge", "Badgy") is buggy, ad-filled, and barely works on iOS. BadgeCast is the open-source replacement.
 
 ---
 
 ## Quick Start
 
 1. **Press the side button** on your badge to wake it up
-2. **Open AuraCast** in Chrome, Edge, Brave, Arc, or Opera: [launch it here](https://manaiakalani.github.io/auracast/)
+2. **Open BadgeCast** in Chrome, Edge, Brave, Arc, or Opera. There is no hosted copy yet, so run it on your computer: see [Development](#development).
 3. **Click Connect** and pick your badge (`E87`, `E92`, `L8`, or `X9`) from the Bluetooth picker
 4. **Drag in an image**, pick a pattern, type some text, or import a GIF: then click **Send**
 
@@ -94,7 +95,7 @@ That's it. The image appears on your badge in seconds.
 <summary><strong>Mobile UI</strong></summary>
 <br/>
 <div align="center">
-<img src="docs/screenshots/mobile.png" width="300" alt="AuraCast mobile UI" />
+<img src="docs/screenshots/mobile.png" width="300" alt="BadgeCast mobile UI" />
 </div>
 </details>
 
@@ -108,9 +109,9 @@ If your badge is:
 - Came with the **Zrun** / **HiBadge** / **LED Badge** app
 - Has a **full-color OLED/LCD display** (not a monochrome scrolling text badge)
 
-...it almost certainly works. All these listings use the same **Jieli BR23** chipset. Some listings say 384x384. AuraCast writes a 368x368 circle, which is the size this firmware displays.
+...it almost certainly works. All these listings use the same **Jieli BR23** chipset. Some listings say 384x384. BadgeCast writes a 368x368 circle, which is the size this firmware displays.
 
-> **Not supported:** Square and rectangular scrolling-text badges (the old note cited 64x16 and 32x8 panels) use a different protocol. AuraCast does not speak it. The badge_magic repository this page used to link is gone, and there is no maintained project that clearly covers those two sizes. The closest living tools are for a different family, 11x44 and 12x48 LED name badges: [led-name-badge-ls32](https://github.com/fossasia/led-name-badge-ls32) and [Badge Magic](https://github.com/fossasia/badgemagic-app). They do not drive E87, E92, L8, or X9 round badges. Do not flash that firmware onto a round badge.
+> **Not supported:** Square and rectangular scrolling-text badges (the old note cited 64x16 and 32x8 panels) use a different protocol. BadgeCast does not speak it. The badge_magic repository this page used to link is gone, and there is no maintained project that clearly covers those two sizes. The closest living tools are for a different family, 11x44 and 12x48 LED name badges: [led-name-badge-ls32](https://github.com/fossasia/led-name-badge-ls32) and [Badge Magic](https://github.com/fossasia/badgemagic-app). They do not drive E87, E92, L8, or X9 round badges. Do not flash that firmware onto a round badge.
 
 ---
 
@@ -139,7 +140,7 @@ The page calls `GET /api/status`, `POST /api/blob`, `POST /api/cancel`, `GET /ap
 
 ```bash
 # Clone
-git clone https://github.com/Manaiakalani/auracast.git
+git clone https://github.com/bluehusky95/auracast.git
 cd auracast/web
 
 # Install
@@ -188,11 +189,11 @@ auracast/
 
 ## Why Not Just Use the Zrun App?
 
-| Zrun pain point | AuraCast |
+| Zrun pain point | BadgeCast |
 |---|---|
 | iOS Bluetooth permissions fail silently | Web Bluetooth in Chromium, or the Python relay for Safari and iPhone |
 | Crashes on uploads over ~200 KB | Streaming uploader with retries, tested to 900 KB |
-| Fills flash storage, refuses new uploads | Clips are fitted under 900 KB. Clear the gallery in Zrun if older files fill it. |
+| Fills flash storage, refuses new uploads | Clips are fitted under 900 KB. See and delete stored files under My badge. |
 | Locked to whichever app the seller bundled | One app for every rebrand of the same chipset |
 | Ads, account signup, telemetry | Zero ads, zero tracking, zero accounts, fully local |
 | Closed source | MIT-licensed, fully auditable, PRs welcome |
@@ -224,6 +225,8 @@ The complete BLE protocol reverse-engineering, every byte of the FE/DC/BA framin
 </tr>
 </table>
 
+BadgeCast is a fork of [AuraCast](https://github.com/Manaiakalani/auracast) by [@Manaiakalani](https://github.com/Manaiakalani) (app, patterns, GIF import, UI/UX), MIT License.
+
 Studio features (badge file manager, clock faces, pixel art, arcade, overlays, GIF export) are ported from [Badge Studio](https://github.com/martinferreiraHCA/Badge), Copyright (c) 2026 Badge Studio contributors, MIT License.
 
 Built on their shoulders. Painted in Material 3. Shipped over MJPEG.
@@ -238,10 +241,10 @@ Built on their shoulders. Painted in Material 3. Shipped over MJPEG.
 
 <div align="center">
 
-**[AuraCast](https://manaiakalani.github.io/auracast/)**: the open badge uploader
+**BadgeCast**: the open badge uploader
 
 <sub>
-Keywords: E87 smart badge · E92 smart badge · L8 LED badge · X9 LED pin · round LED badge · anime badge app · LED smart pin · Zrun alternative · Zrun replacement · HiBadge alternative · Web Bluetooth badge · BLE LED badge · programmable LED pin · round OLED badge · anime LED lapel pin · Akinokai badge · Jieli badge · custom badge uploader · AuraCast
+Keywords: E87 smart badge · E92 smart badge · L8 LED badge · X9 LED pin · round LED badge · anime badge app · LED smart pin · Zrun alternative · Zrun replacement · HiBadge alternative · Web Bluetooth badge · BLE LED badge · programmable LED pin · round OLED badge · anime LED lapel pin · Akinokai badge · Jieli badge · custom badge uploader · BadgeCast
 </sub>
 
 </div>
