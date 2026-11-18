@@ -217,7 +217,9 @@
   const hasWebBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator
   let httpConn: { http: true; address: string } | null = $state(null)
 
-  let conn: E87Connection | null = $state(null)
+  // raw: a deep $state proxy snapshots conn.notificationQueue, so replies pushed
+  // by the BLE listener never reach the waiters (every RCSP command times out).
+  let conn: E87Connection | null = $state.raw(null)
   let isConnecting = $state(false)
   let isWriting = $state(false)
   let cancelRequested = $state(false)
