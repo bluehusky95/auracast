@@ -1,7 +1,7 @@
 <script lang="ts">
   // Saved designs: send again, download, delete, import/export.
   import { onMount } from 'svelte'
-  import { listItems, deleteItem, exportLibrary, importFile, isJpeg, type LibraryItem } from './library'
+  import { listItems, deleteItem, exportLibrary, importFile, isJpeg, buildSlideshow, saveItem, type LibraryItem } from './library'
   import { formatBytes } from './utils'
   import { Button as M3Button, IconButton as M3IconButton } from './m3'
 
@@ -9,8 +9,29 @@
     onSend: (bytes: Uint8Array) => void
     canSend: boolean
     refreshKey?: number
+    /** Badge frame size, for slideshows that need re-encoding. */
+    outputSize: { width: number; height: number }
   }
-  let { onSend, canSend, refreshKey = 0 }: Props = $props()
+  let { onSend, canSend, refreshKey = 0, outputSize }: Props = $props()
+
+  // Slideshow: designs in the order they were ticked.
+  let picked: string[] = $state([])
+  let secondsPerStill = $state(3)
+  let building = $state(false)
+  const togglePick = (id: string) => { picked = picked.includes(id) ? picked.filter((p) => p !== id) : [...picked, id] }
+
+  async function makeSlideshow() {
+    building = true
+    error = ''
+    try {
+      const chosen = picked.map((id) => items.find((it) => it.id === id)).filter((it): it is LibraryItem => !!it)
+      const bytes = await buildSlideshow(chosen.map((it) => it.bytes), secondsPerStill, outputSize)
+      await saveItem(bytes, `Slideshow of ${chosen.length}`)
+      picked = []
+      note = 'Slideshow saved at the top of the list.'
+      await load()
+    } catch (e) { error = (e as Error).message } finally { building = false }
+  }
 
   let items: LibraryItem[] = $state([])
   let thumbs: Record<string, string> = $state({})
@@ -68,13 +89,35 @@
   </div>
   {#if error}<p class="text-label-md text-error m-0">{error}</p>{/if}
 
+  {#if items.length > 1}
+    <div class="flex flex-wrap items-center gap-3 rounded-2xl border border-outline-variant p-3">
+      <span class="text-label-md text-on-surface-variant">
+        {picked.length < 2 ? 'Slideshow: tick two or more designs below, in the order they should play.' : `Slideshow of ${picked.length} designs`}
+      </span>
+      <label class="flex items-center gap-2 text-label-md">
+        Each still shows for
+        <input type="range" min="1" max="10" bind:value={secondsPerStill} class="w-24 accent-[var(--md-sys-color-primary)]" />
+        <span class="tabular-nums w-8">{secondsPerStill} s</span>
+      </label>
+      <M3Button variant="tonal" size="sm" icon="slideshow" disabled={picked.length < 2 || building} onclick={makeSlideshow}>{building ? 'Making…' : 'Make slideshow'}</M3Button>
+    </div>
+  {/if}
+
   {#if !items.length}
     <p class="text-body-md text-on-surface-variant m-0">Nothing saved yet. Use <b>Save</b> under the preview to keep a design here. Saved designs stay in this browser only.</p>
   {:else}
     <ul class="grid grid-cols-2 sm:grid-cols-3 gap-3 list-none p-0 m-0">
       {#each items as it (it.id)}
         <li class="rounded-2xl bg-surface-container p-2 flex flex-col gap-2 min-w-0">
-          <img src={thumbs[it.id]} alt={it.name} class="aspect-square w-full rounded-full object-cover bg-black" />
+          <div class="relative">
+            <img src={thumbs[it.id]} alt={it.name} class="aspect-square w-full rounded-full object-cover bg-black" />
+            {#if items.length > 1}
+              <label class="absolute top-0 left-0 flex items-center gap-1 rounded-full bg-surface-container-high px-2 py-1 text-label-sm cursor-pointer">
+                <input type="checkbox" checked={picked.includes(it.id)} onchange={() => togglePick(it.id)} aria-label="Add {it.name} to the slideshow" />
+                {#if picked.includes(it.id)}{picked.indexOf(it.id) + 1}{/if}
+              </label>
+            {/if}
+          </div>
           <div class="text-label-md text-on-surface truncate" title={it.name}>{it.name}</div>
           <div class="text-label-sm text-on-surface-variant">{isJpeg(it.bytes) ? 'Still' : 'Clip'} · {formatBytes(it.bytes.length)}</div>
           <div class="flex justify-end gap-1">

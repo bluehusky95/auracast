@@ -9,6 +9,7 @@
   import FrameRateControls from './FrameRateControls.svelte'
   import SegmentedButton from './m3/SegmentedButton.svelte'
   import { Button, IconButton } from './m3'
+  import { fillTokens, COUNTDOWN } from './text-tokens'
   import { defaultTextLayout, type TextLayout, type VAlign } from '../text-layout'
 
   interface Props {
@@ -25,6 +26,10 @@
     textLayout: TextLayout
     /** Extra messages that take turns with `text`. */
     textPages: string[]
+    /** datetime-local value the {countdown} placeholder counts down to. */
+    textCountdownTo: string
+    /** Re-send every N minutes while connected (0 = off). */
+    textLiveEvery: number
     onGeneratePreview: () => void
     onGenerateStill: () => void
   }
@@ -40,6 +45,8 @@
     textFrames = $bindable(),
     textLayout = $bindable(),
     textPages = $bindable(),
+    textCountdownTo = $bindable(),
+    textLiveEvery = $bindable(),
     onGeneratePreview, onGenerateStill,
   }: Props = $props()
 
@@ -52,10 +59,64 @@
     { label: 'Sunset orange',   fg: '#ff7a3f', bg: '#1a0a00' },
   ]
 
+  let hasCountdown = $derived([text, ...textPages].some((t) => t.includes(COUNTDOWN)))
+  // Ticks so the preview's countdown stays current.
+  let minute = $state(Math.floor(Date.now() / 60000))
+  $effect(() => {
+    if (!hasCountdown) return
+    const id = setInterval(() => { minute = Math.floor(Date.now() / 60000) }, 15000)
+    return () => clearInterval(id)
+  })
+
   // Same font and weight App uses to render, so the size hint matches the output.
   let laid = $derived(TextGen.measureTextLayout(
-    text, (TEXT_FONTS.find((f) => f.id === textFontId) ?? TEXT_FONTS[0]).stack, 800, textLayout,
+    fillTokens(text, textCountdownTo, minute * 60000), (TEXT_FONTS.find((f) => f.id === textFontId) ?? TEXT_FONTS[0]).stack, 800, textLayout,
   ))
+
+  // Local time as a datetime-local value.
+  const localInput = (ms: number) => new Date(ms - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+
+  interface Template {
+    name: string; icon: string; text: string; effect: TextEffect; fg: string; bg: string
+    layout: Partial<TextLayout>; countdown?: boolean
+  }
+  const TEMPLATES: Template[] = [
+    { name: 'Name tag', icon: 'badge', text: 'Your Name\npronouns\nCompany', effect: 'static', fg: '#f5f7ff', bg: '#101828', layout: { lineScale: [100, 45, 55] } },
+    { name: 'Hello, my name is', icon: 'waving_hand', text: 'HELLO\nmy name is\nYour Name\n', effect: 'static', fg: '#ffffff', bg: '#d0021b', layout: { rim: true, lineScale: [100, 55, 100] } },
+    { name: 'Ask me about', icon: 'forum', text: 'ASK ME ABOUT\nyour topic', effect: 'glow', fg: '#3fd2fb', bg: '#000820', layout: { lineScale: [50, 100] } },
+    { name: 'Staff', icon: 'verified', text: 'STAFF\nYour Name', effect: 'static', fg: '#ffe23f', bg: '#000000', layout: { lineScale: [100, 55] } },
+    { name: 'Volunteer', icon: 'volunteer_activism', text: 'VOLUNTEER\nYour Name', effect: 'static', fg: '#3effb6', bg: '#001a0a', layout: { lineScale: [100, 60] } },
+    { name: 'Countdown', icon: 'timer', text: 'Doors open in\n{countdown}', effect: 'static', fg: '#ff7a3f', bg: '#1a0a00', layout: { lineScale: [50, 100] }, countdown: true },
+  ]
+  type Snapshot = { text: string; pages: string[]; effect: TextEffect; font: string; fg: string; bg: string; layout: TextLayout }
+  let undo: Snapshot | null = $state(null)
+
+  function applyTemplate(t: Template) {
+    // Undo goes back to what you had before the first template you tried.
+    undo ??= { text, pages: [...textPages], effect: textEffect, font: textFontId, fg: textColor, bg: textBackground, layout: $state.snapshot(textLayout) }
+    text = t.text
+    textPages = []
+    textEffect = t.effect
+    textColor = t.fg
+    textBackground = t.bg
+    textLayout = { ...defaultTextLayout(), ...t.layout }
+    if (t.countdown && !textCountdownTo) textCountdownTo = localInput(Date.now() + 3600000)
+  }
+  function undoTemplate() {
+    if (!undo) return
+    text = undo.text
+    textPages = undo.pages
+    textEffect = undo.effect
+    textFontId = undo.font
+    textColor = undo.fg
+    textBackground = undo.bg
+    textLayout = undo.layout
+    undo = null
+  }
+  function addCountdown() {
+    text = text.trim() ? `${text}\n${COUNTDOWN}` : `Starts in\n${COUNTDOWN}`
+    if (!textCountdownTo) textCountdownTo = localInput(Date.now() + 3600000)
+  }
   const POSITIONS: { value: VAlign; label: string }[] = [
     { value: 'top', label: 'Top' }, { value: 'middle', label: 'Middle' }, { value: 'bottom', label: 'Bottom' },
   ]
@@ -95,7 +156,7 @@
   $effect(() => {
     if (isWriting || isGeneratingPreview || isGeneratingPattern) return
     if (!text.trim() && textEffect !== 'static') return
-    const sig = `${text}|${textEffect}|${textFontId}|${textColor}|${textBackground}|${textFrames}|${textFps}|${JSON.stringify(textLayout)}|${JSON.stringify(textPages)}`
+    const sig = `${text}|${textEffect}|${textFontId}|${textColor}|${textBackground}|${textFrames}|${textFps}|${JSON.stringify(textLayout)}|${JSON.stringify(textPages)}|${hasCountdown ? `${minute}|${textCountdownTo}` : ''}`
     if (sig === lastSig) return
     const t = setTimeout(() => {
       lastSig = sig
@@ -114,10 +175,23 @@
 </script>
 
 <div class="flex flex-col gap-5">
+  <div class="flex flex-col gap-2">
+    <span class="text-label-md text-on-surface-variant">Start from a template</span>
+    <div class="flex flex-wrap gap-2">
+      {#each TEMPLATES as t}
+        <Button variant="tonal" size="sm" icon={t.icon} disabled={isWriting} onclick={() => applyTemplate(t)}>{t.name}</Button>
+      {/each}
+      {#if undo}
+        <Button variant="text" size="sm" icon="undo" disabled={isWriting} onclick={undoTemplate}>Undo template</Button>
+      {/if}
+    </div>
+  </div>
+
   <label class="flex flex-col gap-2">
     <span class="text-label-md text-on-surface-variant">{textPages.length ? 'Message 1' : 'Text'}</span>
     <textarea
       bind:value={text}
+      oninput={() => { undo = null }}
       placeholder="Hello world"
       maxlength="120"
       rows="3"
@@ -142,10 +216,38 @@
     {#if textPages.length < 3}
       <Button variant="text" size="sm" icon="add" disabled={isWriting} onclick={() => { textPages = [...textPages, ''] }}>Add message</Button>
     {/if}
+    {#if !hasCountdown}
+      <Button variant="text" size="sm" icon="timer" disabled={isWriting} onclick={addCountdown}>Add countdown</Button>
+    {/if}
     {#if pageCount}
       <span class="text-body-sm text-on-surface-variant">Messages take turns, about {secsEach} s each. Change frames or speed below to adjust.</span>
     {/if}
   </div>
+
+  {#if hasCountdown}
+    <section class="flex flex-col gap-3 rounded-2xl border border-outline-variant p-4" aria-label="Countdown">
+      <div class="flex flex-wrap gap-4 items-end">
+        <label class="flex flex-col gap-2">
+          <span class="text-label-md text-on-surface-variant">Count down to</span>
+          <input type="datetime-local" bind:value={textCountdownTo} disabled={isWriting} />
+        </label>
+        <label class="flex flex-col gap-2">
+          <span class="text-label-md text-on-surface-variant">Keep the badge updated</span>
+          <select bind:value={textLiveEvery} disabled={isWriting}>
+            <option value={0}>Off</option>
+            <option value={1}>Every minute</option>
+            <option value={5}>Every 5 minutes</option>
+            <option value={15}>Every 15 minutes</option>
+          </select>
+        </label>
+      </div>
+      <p class="m-0 text-body-sm text-on-surface-variant">
+        <code class="bg-surface-container px-1 rounded">{COUNTDOWN}</code> in your text shows the time left, as it was when you sent it.
+        With updates on, AuraCast sends again while this page stays open and the badge is connected.
+        Use the Static effect so each update is quick. Frequent updates use more battery.
+      </p>
+    </section>
+  {/if}
 
   <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
     {#each TEXT_EFFECTS as eff}

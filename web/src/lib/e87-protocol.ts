@@ -376,12 +376,9 @@ const PUBLIC_SYSINFO_ATTR_NAMES: Record<number, string> = {
   19: 'sound_card',
 }
 
-export async function connectE87(log?: (msg: string) => void, remembered?: BluetoothDevice): Promise<E87Connection> {
-  if (!('bluetooth' in navigator)) {
-    throw new Error('Web Bluetooth is not available in this browser.')
-  }
-
-  const device = remembered ?? await navigator.bluetooth.requestDevice({
+/** Show the browser's badge picker. Picking one lets this site reconnect to it later without asking. */
+export function requestBadgeE87(): Promise<BluetoothDevice> {
+  return navigator.bluetooth.requestDevice({
     filters: [
       { namePrefix: 'E87' },
       { namePrefix: 'E01' },
@@ -392,6 +389,14 @@ export async function connectE87(log?: (msg: string) => void, remembered?: Bluet
     ],
     optionalServices: SERVICE_CANDIDATES,
   })
+}
+
+export async function connectE87(log?: (msg: string) => void, remembered?: BluetoothDevice): Promise<E87Connection> {
+  if (!('bluetooth' in navigator)) {
+    throw new Error('Web Bluetooth is not available in this browser.')
+  }
+
+  const device = remembered ?? await requestBadgeE87()
 
   // GATT connect + service discovery can fail on Windows (and sometimes macOS).
   //

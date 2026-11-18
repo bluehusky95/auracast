@@ -51,7 +51,7 @@ That's it. The image appears on your badge in seconds.
 | ✨ | **30 animated patterns** | Matrix Rain, Aurora Ribbons, Fireworks, Clock Face, Flow Field, Reaction Diffusion, Painted Base, Voronoi Crystals, Kaleidoscope, Danmaku, and more. Generated in the browser as looping clips. |
 | 🖼️ | **Image upload** | Drag-and-drop JPEG, PNG, or WebP. Auto-cropped and fitted to the badge's circular 368x368 display. |
 | 🎞️ | **GIF import** | Drop an animated GIF: frames are decoded, circular-cropped, and packed as a looping MJPEG animation on the badge. |
-| 🔤 | **Text effects** | Static, marquee, rainbow, blink, bounce, typewriter, glow, and wave. Custom colors and fonts, multiple lines with their own sizes, auto or fixed size, line and letter spacing, top/middle/bottom position, outline and shadow. Lines are fitted to the round screen. Curve the first and last lines along the edge, and add up to 4 messages that take turns. |
+| 🔤 | **Text effects** | Static, marquee, rainbow, blink, bounce, typewriter, glow, and wave. Custom colors and fonts, multiple lines with their own sizes, auto or fixed size, line and letter spacing, top/middle/bottom position, outline and shadow. Lines are fitted to the round screen. Curve the first and last lines along the edge, and add up to 4 messages that take turns. Templates for name tags, "Hello, my name is", "Ask me about", staff and volunteer badges, and a countdown that can re-send itself to stay current. |
 | 🎬 | **Video clips** | Trim MP4/MOV clips to fit the badge's 900 KB storage. Frame-by-frame preview before sending. |
 | 📱 | **QR codes** | High-contrast circular QR codes that scan right off the badge: a link, a contact card (people save you to their phone), Wi-Fi details, or plain text. |
 | 🖼️ | **Image sequences** | Multi-frame slideshows that loop on-device. |
@@ -65,7 +65,8 @@ That's it. The image appears on your badge in seconds.
 | 🟪 | **Pixel art** | Draw up to 48 frames on an 8 to 32 px grid, then send the loop. |
 | 🎮 | **Arcade** | Snake, Orbit Pong, Breakout, Flappy Badge, and Meteor Dodge. Record 6 seconds of play and send it. |
 | 😎 | **Stickers, frame & caption** | Emoji stickers, animated ring frames, and a caption on top of any mode. |
-| 💾 | **Saved designs** | Keep finished designs in the browser, re-send them later, and import or export them. Download any design as AVI, GIF, or PNG. |
+| 💾 | **Saved designs** | Keep finished designs in the browser, re-send them later, and import or export them. Download any design as AVI, GIF, or PNG. Join saved designs into one looping slideshow. |
+| 📡 | **Several badges** | Keep a list of your badges, switch between them, and send one design to all of them in turn. |
 | 🔒 | **Fully private** | Zero analytics. Zero cookies. Zero tracking. No network requests beyond your own badge, except GIPHY search, which only runs when you search with your own API key. |
 
 <div align="center">

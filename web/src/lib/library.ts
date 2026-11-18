@@ -3,8 +3,10 @@
  * badge payload (JPEG still or MJPEG AVI), so it can be re-sent as is.
  * Idea from Badge Studio's db.js (MIT).
  */
-import { jpegFrames } from './badge-codec'
-import { MAX_UPLOAD_BYTES } from './image-processing'
+import { jpegFrames, planSlideshow } from './badge-codec'
+import { MAX_UPLOAD_BYTES, fitJpegFramesToBudget } from './image-processing'
+import { readAviFps } from './avi-preview'
+import { buildMjpgAvi } from '../avi-builder'
 
 export interface LibraryItem {
   id: string
@@ -83,4 +85,13 @@ export async function importFile(file: File): Promise<number> {
   }
   await saveItem(new Uint8Array(await file.arrayBuffer()), file.name.replace(/\.[^.]+$/, ''))
   return 1
+}
+
+/** Join saved designs into one looping clip (stills held, clips played once). */
+export async function buildSlideshow(payloads: Uint8Array[], secondsPerStill: number, size: { width: number; height: number }): Promise<Uint8Array> {
+  const clips = payloads.map((b) => ({ frames: jpegFrames(b), fps: isAvi(b) ? readAviFps(b) : 1 }))
+  const plan = planSlideshow(clips.map((c) => ({ count: c.frames.length, fps: c.fps })), secondsPerStill)
+  const fitted = await fitJpegFramesToBudget(plan.picks.map(([i, k]) => clips[i].frames[k]), size.width, size.height, MAX_UPLOAD_BYTES)
+  if (!fitted.fits) throw new Error('Too much for one clip. Pick fewer designs, or fewer seconds per still.')
+  return buildMjpgAvi(fitted.frames, { fps: plan.fps })
 }

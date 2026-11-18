@@ -71,3 +71,24 @@ export function jpegFrames(bytes: Uint8Array): Uint8Array[] {
   }
   return out
 }
+
+/**
+ * Plan one looping clip from several designs. Stills are held for
+ * `secondsPerStill`; clips play once at their own speed, resampled to the
+ * slideshow's frame rate (the fastest clip's, 2-10 fps; 2 fps when all stills).
+ * Returns the frame rate and, per output frame, [design index, frame index].
+ */
+export function planSlideshow(clips: { count: number; fps: number }[], secondsPerStill: number): { fps: number; picks: [number, number][] } {
+  const moving = clips.filter((c) => c.count > 1)
+  const fps = moving.length ? Math.min(10, Math.max(2, Math.round(Math.max(...moving.map((c) => c.fps))))) : 2
+  const picks: [number, number][] = []
+  clips.forEach((c, i) => {
+    if (c.count <= 1) {
+      for (let k = 0; k < Math.max(1, Math.round(secondsPerStill * fps)); k++) picks.push([i, 0])
+      return
+    }
+    const n = Math.max(1, Math.round((c.count / c.fps) * fps))
+    for (let k = 0; k < n; k++) picks.push([i, Math.min(c.count - 1, Math.floor((k * c.fps) / fps))])
+  })
+  return { fps, picks }
+}

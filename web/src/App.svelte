@@ -2,6 +2,7 @@
   import { untrack } from 'svelte'
   import { formatDuration, formatBytes, sleep } from './lib/utils'
   import { explainError, isRetryable, type Problem } from './lib/friendly-errors'
+  import { fillTokens } from './lib/text-tokens'
   import {
     MAX_UPLOAD_BYTES,
     E87_IMAGE_WIDTH,
@@ -20,6 +21,7 @@
   import { parseAviFrames, readAviFps } from './lib/avi-preview'
   import {
     connectE87,
+    requestBadgeE87,
     disconnectE87,
     writeFileE87,
     getScreenInfoE87,
@@ -143,6 +145,7 @@
     textFrames?: number
     textLayout?: Partial<TextLayout>
     textPages?: string[]
+    textCountdownTo?: string
     imageBackdropColor?: string
     imagePreviewMode?: PreviewMode
     sequencePreviewMode?: PreviewMode
@@ -367,6 +370,9 @@
   let textPages: string[] = $state(Array.isArray(saved.textPages) ? saved.textPages.filter((p) => typeof p === 'string').slice(0, 3) : [])
   // Static text with extra messages is a slideshow, so it goes out as an animation.
   let textIsStill = $derived(textEffect === 'static' && !textPages.some((p) => p.trim()))
+  let textCountdownTo = $state(s(saved.textCountdownTo, ''))
+  // Not saved: re-sending on a timer should never start by itself after a reload.
+  let textLiveEvery = $state(0)
   let textAutoSignature = $state('')
 
   let aviPreviewFrames: ImageBitmap[] = $state([])
@@ -623,11 +629,130 @@
 
   // ─── Connection ───
 
-  async function rememberedBadge(): Promise<BluetoothDevice | null> {
+  const BADGE_NAME = /^(E87|E01|E92|L8|X9|LED Badge)/
+  const LAST_BADGE_KEY = 'auracast.lastBadge'
+  // Badges this browser may reconnect to without the picker.
+  let knownBadges: BluetoothDevice[] = $state.raw([])
+  // Set by connectTo() so connect() uses that badge instead of the last one.
+  let connectTarget: BluetoothDevice | null = null
+
+  // Chrome only lists remembered badges (getDevices) with a flag turned on, so
+  // also keep every badge picked during this visit; those work until reload.
+  const canRemember = hasWebBluetooth && typeof navigator.bluetooth.getDevices === 'function'
+  const sessionBadges = new Map<string, BluetoothDevice>()
+  function noteBadge(device: BluetoothDevice): void {
+    sessionBadges.set(device.id, device)
+    void refreshKnownBadges()
+  }
+
+  async function refreshKnownBadges(): Promise<void> {
+    const byId = new Map(sessionBadges)
     try {
-      const devices = await navigator.bluetooth.getDevices?.()
-      return devices?.find((d) => /^(E87|E01|E92|L8|X9|LED Badge)/.test(d.name ?? '')) ?? null
-    } catch { return null }
+      for (const d of (await navigator.bluetooth.getDevices?.()) ?? []) {
+        if (BADGE_NAME.test(d.name ?? '') && !byId.has(d.id)) byId.set(d.id, d)
+      }
+    } catch { /* not supported */ }
+    knownBadges = [...byId.values()]
+  }
+  if (hasWebBluetooth) void refreshKnownBadges()
+
+  /** The badge used last time, or the only one known. With several and no history, show the picker. */
+  async function rememberedBadge(): Promise<BluetoothDevice | null> {
+    await refreshKnownBadges()
+    let last: string | null = null
+    try { last = localStorage.getItem(LAST_BADGE_KEY) } catch { /* private mode */ }
+    return knownBadges.find((d) => d.id === last) ?? (knownBadges.length === 1 ? knownBadges[0] : null)
+  }
+
+  async function connectTo(device: BluetoothDevice): Promise<void> {
+    if (conn) await disconnect()
+    connectTarget = device
+    try { await connect() } finally { connectTarget = null }
+  }
+
+  /** Show the picker to give this site access to another badge. */
+  async function addBadge(): Promise<void> {
+    try {
+      const device = await requestBadgeE87()
+      log(`Added badge: ${device.name ?? 'unnamed'}`)
+      noteBadge(device)
+    } catch (e) {
+      const msg = (e as Error).message
+      if (!/cancel/i.test(msg)) problem = explainError(msg)
+    }
+  }
+
+  async function forgetBadge(device: BluetoothDevice): Promise<void> {
+    if (conn?.device === device) await disconnect()
+    sessionBadges.delete(device.id)
+    try { await device.forget?.() } catch (e) { log(`Forget failed: ${(e as Error).message}`) }
+    await refreshKnownBadges()
+  }
+
+  /** Send the current design to every known badge in turn, one connection at a time. */
+  async function sendToAllBadges(): Promise<void> {
+    await refreshKnownBadges()
+    const badges = knownBadges
+    if (!badges.length || isWriting) return
+    isWriting = true
+    problem = null
+    let ok = 0
+    const missed: string[] = []
+    try {
+      const payload = await getUploadBytes()
+      if (payload.length > MAX_UPLOAD_BYTES) throw new Error(`File too large: ${formatBytes(payload.length)} exceeds ${formatBytes(MAX_UPLOAD_BYTES)} limit.`)
+      const mode = resolveUploadModeForDevice()
+      // Each badge gets its own clean connection. disconnect() raises the
+      // cancel flag, so clear it afterwards.
+      if (conn) await disconnect()
+      cancelRequested = false
+      for (const [i, device] of badges.entries()) {
+        if (cancelRequested) break
+        const name = `${device.name ?? 'Badge'} (${i + 1} of ${badges.length})`
+        progress = 0
+        progressLabel = `${name}: connecting…`
+        let c: E87Connection | null = null
+        try {
+          c = await connectE87(log, device)
+          uploadStartTime = Date.now()
+          totalBytesForEta = payload.length
+          await writeFileE87({
+            conn: c,
+            payload,
+            uploadMode: mode,
+            deviceLanguage,
+            interChunkDelayMs,
+            cancelRequested: () => cancelRequested,
+            onProgress: (bytesSent, totalBytes) => {
+              sentBytesForEta = bytesSent
+              progress = Math.min(100, Math.round((bytesSent / totalBytes) * 100))
+              progressLabel = `${name}: ${progress}%`
+            },
+            log,
+          })
+          ok++
+          log(`Sent to ${name}.`)
+        } catch (e) {
+          const msg = (e as Error).message
+          log(`${name} failed: ${msg}`)
+          missed.push(`${name}: ${explainError(msg).title.toLowerCase()}`)
+        } finally {
+          if (c) await disconnectE87(c, log).catch(() => {})
+        }
+      }
+      status = `Sent to ${ok} of ${badges.length} badges.`
+      if (missed.length) {
+        problem = {
+          title: `Sent to ${ok} of ${badges.length} badges`,
+          tip: `Not reached: ${missed.join('; ')}. Wake those badges with the side button, keep them close, and try again.`,
+        }
+      }
+    } catch (e) {
+      problem = explainError((e as Error).message)
+      status = `Send to all failed: ${problem.title}`
+    } finally {
+      isWriting = false
+    }
   }
 
   async function connect(): Promise<void> {
@@ -656,7 +781,7 @@
       // Reconnect to a badge Chrome already granted, without the picker.
       // Falls back to the picker if it's asleep or out of range.
       let nextConn: E87Connection | null = null
-      const remembered = await rememberedBadge()
+      const remembered = connectTarget ?? await rememberedBadge()
       if (remembered) {
         status = `Reconnecting to ${remembered.name ?? 'badge'}…`
         try { nextConn = await connectE87(log, remembered) } catch (e) { log(`Remembered badge unavailable: ${(e as Error).message}`) }
@@ -680,6 +805,8 @@
       } catch { /* best effort */ }
       conn = nextConn
       problem = null
+      try { localStorage.setItem(LAST_BADGE_KEY, nextConn.device.id) } catch { /* private mode */ }
+      noteBadge(nextConn.device)
       status = `Connected: ${nextConn.device.name ?? 'Unknown device'}`
 
       // Auto-reconnect: when the GATT server drops the link, clear our
@@ -853,6 +980,7 @@
       textFrames,
       textLayout,
       textPages,
+      textCountdownTo,
       colorScheme,
       selectedPatternId: selectedPattern?.id,
       patternOutputMode,
@@ -1262,7 +1390,7 @@
     const isStill = textIsStill
     const textGen = await loadTextGen()
     const frames = await textGen.generateTextFrames({
-      text,
+      text: fillTokens(text, textCountdownTo),
       effect: textEffect,
       fontFamily: fontStackFor(textGen, textFontId),
       fontWeight: 800,
@@ -1271,7 +1399,7 @@
       frames: isStill ? 1 : textFrames,
       fps: textFps,
       layout: $state.snapshot(textLayout),
-      pages: $state.snapshot(textPages),
+      pages: textPages.map((p) => fillTokens(p, textCountdownTo)),
     })
     if (isStill) {
       return { bytes: frames[0], isStill: true }
@@ -1816,6 +1944,18 @@
       log(status)
     }
   }
+
+  // Countdown updates: re-send the text design on a timer while connected.
+  $effect(() => {
+    if (!textLiveEvery || uploadMode !== 'text' || !conn) return
+    const id = setInterval(() => {
+      if (isWriting || !conn?.server?.connected) return
+      log('Countdown update: sending the latest time to the badge.')
+      clearPreparedState()
+      void startUpload()
+    }, textLiveEvery * 60000)
+    return () => clearInterval(id)
+  })
 
   async function startUpload(): Promise<void> {
     if (!conn && !httpConn) {
@@ -2522,6 +2662,30 @@
                     <M3Button variant="text" size="sm" icon="image" onclick={() => downloadGenerated('png')}>PNG</M3Button>
                     <M3Button variant="text" size="sm" icon="bookmark_add" onclick={saveToLibrary}>Save</M3Button>
                   </div>
+                  {#if hasWebBluetooth}
+                    <details class="w-full text-body-sm text-on-surface-variant">
+                      <summary class="cursor-pointer text-label-md text-center">Your badges ({knownBadges.length})</summary>
+                      <div class="flex flex-col gap-1 pt-2">
+                        {#each knownBadges as device, i (device.id)}
+                          <div class="flex items-center gap-2">
+                            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">{conn?.device === device ? 'bluetooth_connected' : 'watch'}</span>
+                            <span class="flex-1 truncate">{device.name ?? 'Badge'} {knownBadges.length > 1 ? `#${i + 1}` : ''}</span>
+                            {#if conn?.device !== device}
+                              <M3Button variant="text" size="sm" disabled={isConnecting} onclick={() => connectTo(device)}>Connect</M3Button>
+                            {/if}
+                            <M3Button variant="text" size="sm" onclick={() => forgetBadge(device)}>Forget</M3Button>
+                          </div>
+                        {/each}
+                        <div class="flex flex-wrap justify-center gap-1">
+                          <M3Button variant="text" size="sm" icon="add_link" onclick={addBadge}>Add a badge</M3Button>
+                          {#if knownBadges.length > 1}
+                            <M3Button variant="tonal" size="sm" icon="cell_tower" onclick={sendToAllBadges}>Send to all {knownBadges.length}</M3Button>
+                          {/if}
+                        </div>
+                        <p class="m-0 text-label-sm">Send to all connects to each badge in turn, so wake them all first. It ends disconnected.{canRemember ? '' : ' This browser forgets the list when you reload the page.'}</p>
+                      </div>
+                    </details>
+                  {/if}
                 {/if}
               </div>
 
@@ -2582,6 +2746,8 @@
                     bind:textFrames
                     bind:textLayout
                     bind:textPages
+                    bind:textCountdownTo
+                    bind:textLiveEvery
                     onGeneratePreview={generatePreview}
                     onGenerateStill={generateTextStill}
                   />
@@ -2710,7 +2876,7 @@
         </M3Dialog>
 
         <M3Dialog bind:open={libraryOpen} headline="Saved designs">
-          <LibraryPanel onSend={sendSaved} canSend={!!(conn?.server?.connected || httpConn) && !isWriting} refreshKey={libraryRefresh} />
+          <LibraryPanel onSend={sendSaved} canSend={!!(conn?.server?.connected || httpConn) && !isWriting} refreshKey={libraryRefresh} outputSize={getOutputFrameSize()} />
         </M3Dialog>
 
         <M3Dialog bind:open={helpOpen} headline="Help & troubleshooting">
