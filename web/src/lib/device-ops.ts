@@ -1,19 +1,13 @@
 import {
   refreshBatteryE87,
-  listSmallFilesE87,
-  readSmallFileE87,
-  deleteSmallFileE87,
   getTargetInfoE87,
   getTargetFeatureMapE87,
   getSysInfoE87,
-  browseFilesE87,
   getScreenInfoE87,
   getBrightnessE87,
   setBrightnessE87,
   decodePeripherals,
   type E87Connection,
-  type E87SmallFileEntry,
-  type E87FileBrowseEntry,
 } from './e87-protocol'
 
 export type ScreenInfo = {
@@ -30,33 +24,21 @@ export interface DeviceOpsCallbacks {
   setBusy: (b: boolean) => void
   setBattery: (level: number | null, updatedAt: string, charging: boolean) => void
   setBrightnessLevel: (n: number | null) => void
-  setSmallFiles: (files: E87SmallFileEntry[]) => void
-  setSelectedSmallFileKey: (key: string) => void
-  setSmallFileReadText: (text: string) => void
-  setBrowseEntries: (entries: E87FileBrowseEntry[]) => void
   setRcspInfoText: (text: string) => void
   applyScreenInfo: (info: ScreenInfo | null) => void
   getConnection: () => E87Connection | null
-  getSelectedSmallFile: () => E87SmallFileEntry | null
-  getSmallFiles: () => E87SmallFileEntry[]
 }
 
 export interface DeviceOps {
   refreshBattery: () => Promise<void>
   getBrightness: () => Promise<void>
   setBrightness: (level: number) => Promise<void>
-  listSmallFiles: () => Promise<void>
-  browseFiles: () => Promise<void>
+  /** Run any connection-bound op under the shared BLE lock; resolves undefined on failure. */
+  run: <T>(label: string, fn: (c: E87Connection) => Promise<T>) => Promise<T | undefined>
   queryScreenInfo: () => Promise<void>
-  readSelectedSmallFile: () => Promise<void>
-  deleteSelectedSmallFile: () => Promise<void>
   getTargetFeatureMap: () => Promise<void>
   getTargetInfo: () => Promise<void>
   getSysInfo: () => Promise<void>
-}
-
-function smallFileKey(file: E87SmallFileEntry): string {
-  return `${file.type}:${file.id}`
 }
 
 export function createDeviceOps(cb: DeviceOpsCallbacks): DeviceOps {
@@ -66,15 +48,9 @@ export function createDeviceOps(cb: DeviceOpsCallbacks): DeviceOps {
     setBusy,
     setBattery,
     setBrightnessLevel,
-    setSmallFiles,
-    setSelectedSmallFileKey,
-    setSmallFileReadText,
-    setBrowseEntries,
     setRcspInfoText,
     applyScreenInfo,
     getConnection,
-    getSelectedSmallFile,
-    getSmallFiles,
   } = cb
 
   // Execution lock to prevent concurrent BLE operations from interleaving
@@ -90,10 +66,10 @@ export function createDeviceOps(cb: DeviceOpsCallbacks): DeviceOps {
    * set to "<errorPrefix> failed: <message>" - preserving the exact
    * strings the user already sees in the status pill.
    */
-  async function runDeviceOp(
+  async function runDeviceOp<T>(
     errorPrefix: string,
-    fn: (c: E87Connection) => Promise<void>,
-  ): Promise<void> {
+    fn: (c: E87Connection) => Promise<T>,
+  ): Promise<T | undefined> {
     if (isExecuting) {
       log(`${errorPrefix}: operation already in progress, skipping.`)
       return
@@ -106,7 +82,7 @@ export function createDeviceOps(cb: DeviceOpsCallbacks): DeviceOps {
     isExecuting = true
     setBusy(true)
     try {
-      await fn(conn)
+      return await fn(conn)
     } catch (error) {
       const msg = `${errorPrefix} failed: ${(error as Error).message}`
       setStatus(msg)
@@ -141,41 +117,6 @@ export function createDeviceOps(cb: DeviceOpsCallbacks): DeviceOps {
     })
   }
 
-  async function listSmallFiles(): Promise<void> {
-    await runDeviceOp('List files', async (c) => {
-      setSmallFileReadText('')
-      const items = await listSmallFilesE87(c, log)
-      setSmallFiles(items)
-      if (items.length === 0) {
-        setStatus('No small files reported by device.')
-        setSelectedSmallFileKey('')
-      } else {
-        setStatus(`Found ${items.length} small file(s).`)
-        if (!getSelectedSmallFile()) {
-          setSelectedSmallFileKey(smallFileKey(items[0]))
-        }
-      }
-    })
-  }
-
-  async function browseFiles(): Promise<void> {
-    await runDeviceOp('FileBrowse', async (c) => {
-      // Try files first, then folders if empty
-      let results = await browseFilesE87(c, log, { type: 1, readNum: 50 })
-      if (results.length === 0) {
-        results = await browseFilesE87(c, log, { type: 0, readNum: 50 })
-      }
-      setBrowseEntries(results)
-      const total = results.length
-      setRcspInfoText(JSON.stringify({
-        command: 'FileBrowseCmd',
-        totalEntries: total,
-        entries: results,
-      }, null, 2))
-      setStatus(total > 0 ? `FileBrowse: found ${total} entries.` : 'FileBrowse: no entries found on any storage.')
-    })
-  }
-
   async function queryScreenInfo(): Promise<void> {
     await runDeviceOp('ScreenInfo', async (c) => {
       const info = await getScreenInfoE87(c, log)
@@ -185,38 +126,6 @@ export function createDeviceOps(cb: DeviceOpsCallbacks): DeviceOps {
         info,
       }, null, 2))
       setStatus(info ? `Screen: ${info.width}x${info.height} (pic ${info.pictureWidth}x${info.pictureHeight})` : 'ScreenInfo: no response.')
-    })
-  }
-
-  async function readSelectedSmallFile(): Promise<void> {
-    const item = getSelectedSmallFile()
-    if (!item) {
-      setStatus(getConnection() ? 'No file selected.' : 'Not connected.')
-      return
-    }
-    await runDeviceOp('Read file', async (c) => {
-      const { data, crc16 } = await readSmallFileE87(c, item, log)
-      const asText = new TextDecoder().decode(data)
-      const crcInfo = crc16 === null ? 'n/a' : `0x${crc16.toString(16).padStart(4, '0')}`
-      setSmallFileReadText(`type=${item.typeName} id=${item.id} size=${data.length} crc=${crcInfo}\n\n${asText}`)
-      setStatus(`Read ${data.length} byte(s) from ${item.typeName}#${item.id}.`)
-    })
-  }
-
-  async function deleteSelectedSmallFile(): Promise<void> {
-    const item = getSelectedSmallFile()
-    if (!item) {
-      setStatus(getConnection() ? 'No file selected.' : 'Not connected.')
-      return
-    }
-    await runDeviceOp('Delete file', async (c) => {
-      await deleteSmallFileE87(c, item, log)
-      const removedKey = smallFileKey(item)
-      const next = getSmallFiles().filter((f) => smallFileKey(f) !== removedKey)
-      setSmallFiles(next)
-      setSelectedSmallFileKey(next.length ? smallFileKey(next[0]) : '')
-      setSmallFileReadText('')
-      setStatus(`Deleted ${item.typeName}#${item.id}.`)
     })
   }
 
@@ -299,11 +208,8 @@ export function createDeviceOps(cb: DeviceOpsCallbacks): DeviceOps {
     refreshBattery,
     getBrightness,
     setBrightness,
-    listSmallFiles,
-    browseFiles,
+    run: runDeviceOp,
     queryScreenInfo,
-    readSelectedSmallFile,
-    deleteSelectedSmallFile,
     getTargetFeatureMap,
     getTargetInfo,
     getSysInfo,

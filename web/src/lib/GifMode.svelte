@@ -26,6 +26,49 @@
   let outputSize = $state('')
   let errorMsg = $state('')
 
+  // GIPHY search (opt-in: needs the user's own API key; the only request
+  // AuraCast makes off-device, and only when you search).
+  const KEY_STORE = 'auracast.giphyKey'
+  let giphyKey = $state((() => { try { return localStorage.getItem(KEY_STORE) ?? '' } catch { return '' } })())
+  let giphyQuery = $state('')
+  let giphyResults: Array<{ id: string; title: string; thumb: string; url: string }> = $state([])
+  let giphyBusy = $state(false)
+
+  async function giphySearch(e: Event): Promise<void> {
+    e.preventDefault()
+    errorMsg = ''
+    const key = giphyKey.trim(), q = giphyQuery.trim()
+    if (!key || !q) { errorMsg = 'Enter your GIPHY API key and a search term.'; return }
+    try { localStorage.setItem(KEY_STORE, key) } catch { /* storage blocked */ }
+    giphyBusy = true
+    try {
+      const res = await fetch(`https://api.giphy.com/v1/gifs/search?api_key=${encodeURIComponent(key)}&q=${encodeURIComponent(q)}&limit=24&rating=g`)
+      if (!res.ok) throw new Error(`GIPHY answered ${res.status}. Check the API key.`)
+      const data = await res.json()
+      giphyResults = (data?.data ?? []).map((g: any) => ({ id: String(g.id), title: String(g.title ?? ''), thumb: String(g.images?.fixed_width_small?.url ?? ''), url: String(g.images?.downsized?.url ?? '') }))
+        .filter((g: { thumb: string; url: string }) => /^https:\/\/[a-z0-9.]*giphy\.com\//.test(g.url) && /^https:\/\/[a-z0-9.]*giphy\.com\//.test(g.thumb))
+      if (!giphyResults.length) status = 'No GIFs found.'
+    } catch (err) {
+      errorMsg = (err as Error).message
+    } finally {
+      giphyBusy = false
+    }
+  }
+
+  async function pickGiphy(url: string): Promise<void> {
+    busy = true
+    errorMsg = ''
+    try {
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`Download failed (${res.status}).`)
+      const blob = await res.blob()
+      await processGif(new File([blob], 'giphy.gif', { type: 'image/gif' }))
+    } catch (err) {
+      errorMsg = (err as Error).message
+      busy = false
+    }
+  }
+
   function handleDrop(e: DragEvent): void {
     e.preventDefault()
     dragOver = false
@@ -216,6 +259,30 @@
   >
     Select GIF file...
   </Button>
+
+  <details class="rounded-2xl bg-surface-container p-3">
+    <summary class="cursor-pointer text-label-lg">Search GIPHY</summary>
+    <form class="flex flex-col gap-2 pt-3" onsubmit={giphySearch}>
+      <label class="flex flex-col gap-1 text-label-md">Your GIPHY API key
+        <input type="password" bind:value={giphyKey} autocomplete="off" class="rounded-lg bg-surface-container-high" />
+      </label>
+      <p class="text-label-sm text-on-surface-variant m-0">Get a free key at developers.giphy.com. It's stored only in this browser, and searches go straight from your browser to GIPHY.</p>
+      <div class="flex gap-2">
+        <input type="search" bind:value={giphyQuery} placeholder="cats, fire, hello…" aria-label="GIPHY search" class="flex-1 rounded-lg bg-surface-container-high" />
+        <Button variant="tonal" size="sm" icon="search" type="submit" disabled={giphyBusy || busy}>{giphyBusy ? 'Searching…' : 'Search'}</Button>
+      </div>
+    </form>
+    {#if giphyResults.length}
+      <div class="grid grid-cols-4 gap-1 pt-3">
+        {#each giphyResults as g (g.id)}
+          <button type="button" class="rounded-lg overflow-hidden aspect-square bg-black" title={g.title} aria-label="Use GIF {g.title}" disabled={busy || isWriting} onclick={() => pickGiphy(g.url)}>
+            <img src={g.thumb} alt="" loading="lazy" class="w-full h-full object-cover" />
+          </button>
+        {/each}
+      </div>
+      <p class="text-label-sm text-on-surface-variant m-0 pt-2">Powered by GIPHY</p>
+    {/if}
+  </details>
 
   {#if status}
     <p class="text-body-sm text-on-surface-variant m-0">{status}</p>

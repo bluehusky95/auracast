@@ -60,7 +60,13 @@ That's it. The image appears on your badge in seconds.
 | 🩺 | **Diagnostics** | One-click connection probe for troubleshooting. |
 | 🌗 | **Material 3 design** | Dark/light theme with M3 Expressive design tokens. |
 | 📲 | **PWA install** | Home-screen install from Chromium on HTTPS. The relay's plain HTTP address on a phone can skip the service worker. The page still runs. |
-| 🔒 | **Fully private** | Zero analytics. Zero cookies. Zero tracking. Zero network requests beyond your own badge. |
+| 🗂️ | **My badge** | See what's stored on the badge with thumbnails, download or delete files, erase everything, and sync the badge clock. |
+| 🕐 | **Live clock faces** | Digital, flip, neon rings, binary, and minimal faces showing the time you send them. |
+| 🟪 | **Pixel art** | Draw up to 48 frames on an 8 to 32 px grid, then send the loop. |
+| 🎮 | **Arcade** | Snake, Orbit Pong, Breakout, Flappy Badge, and Meteor Dodge. Record 6 seconds of play and send it. |
+| 😎 | **Stickers, frame & caption** | Emoji stickers, animated ring frames, and a caption on top of any mode. |
+| 💾 | **Saved designs** | Keep finished designs in the browser, re-send them later, and import or export them. Download any design as AVI, GIF, or PNG. |
+| 🔒 | **Fully private** | Zero analytics. Zero cookies. Zero tracking. No network requests beyond your own badge, except GIPHY search, which only runs when you search with your own API key. |
 
 <div align="center">
 <table>
@@ -216,6 +222,8 @@ The complete BLE protocol reverse-engineering, every byte of the FE/DC/BA framin
 </td>
 </tr>
 </table>
+
+Studio features (badge file manager, clock faces, pixel art, arcade, overlays, GIF export) are ported from [Badge Studio](https://github.com/martinferreiraHCA/Badge), Copyright (c) 2026 Badge Studio contributors, MIT License.
 
 Built on their shoulders. Painted in Material 3. Shipped over MJPEG.
 

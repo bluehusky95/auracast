@@ -21,15 +21,12 @@
     connectE87,
     disconnectE87,
     writeFileE87,
-    stopBrowseE87,
     getScreenInfoE87,
     getBrightnessE87,
     setLanguageE87,
     type E87Connection,
     type E87Language,
     type UploadMode,
-    type E87SmallFileEntry,
-    type E87FileBrowseEntry,
   } from './lib/e87-protocol'
   import { createDeviceOps } from './lib/device-ops'
   import { buildMjpgAvi, sanitizeJpegForBadge } from './avi-builder'
@@ -52,6 +49,12 @@
   import AviPlayer from './lib/AviPlayer.svelte'
   import AuraCastLogo3D from './lib/AuraCastLogo3D.svelte'
   import UploadProgress from './lib/UploadProgress.svelte'
+  import BadgeManager from './lib/BadgeManager.svelte'
+  import OverlayPanel from './lib/OverlayPanel.svelte'
+  import LibraryPanel from './lib/LibraryPanel.svelte'
+  import { saveItem, isJpeg } from './lib/library'
+  import { payloadToGif, payloadToPng } from './lib/exporters'
+  import { applyOverlay, defaultOverlay, overlayActive } from './lib/overlay'
   import PatternMode from './lib/PatternMode.svelte'
   import { generatePatternInWorker, PatternCancelledError } from './lib/pattern-worker-client'
   import LiveTransformCanvas from './lib/LiveTransformCanvas.svelte'
@@ -65,6 +68,8 @@
     video:  () => import('./lib/VideoMode.svelte'),
     gif:    () => import('./lib/GifMode.svelte'),
     qr:     () => import('./lib/QrMode.svelte'),
+    pixel:  () => import('./lib/PixelMode.svelte'),
+    arcade: () => import('./lib/ArcadeMode.svelte'),
   }
   const lazyModes: Record<string, any> = $state({})
   const lazyModePromises: Record<string, Promise<void>> = {}
@@ -273,10 +278,12 @@
   })
 
   let isDeviceOpsBusy = $state(false)
-  let smallFiles: E87SmallFileEntry[] = $state([])
-  let browseEntries: E87FileBrowseEntry[] = $state([])
-  let selectedSmallFileKey = $state('')
-  let smallFileReadText = $state('')
+  let badgeOpen = $state(false)
+  let overlay = $state(defaultOverlay())
+  let libraryOpen = $state(false)
+  let libraryRefresh = $state(0)
+  // A saved design being re-sent: bypasses the current mode entirely.
+  let libraryPayload: Uint8Array | null = null
   let rcspInfoText = $state('')
 
   let logs: string[] = $state([])
@@ -292,6 +299,8 @@
     { id: 'video',   label: 'Video',                               icon: 'movie' },
     { id: 'gif',     label: 'GIF',                                  icon: 'gif_box' },
     { id: 'qr',      label: 'QR code',  mobileLabel: 'QR',         icon: 'qr_code' },
+    { id: 'pixel',   label: 'Pixel art', mobileLabel: 'Pixel',     icon: 'grid_on' },
+    { id: 'arcade',  label: 'Arcade',                              icon: 'sports_esports' },
   ]
 
   // Static per-mode metadata for the page header + mode panel title.
@@ -305,6 +314,8 @@
     video:   { icon: 'movie',        title: 'Video',    panelTitle: 'Video clip',     intro: 'Trim a clip, set the framerate, and send it as an MJPEG that fits in 900\u00a0KB.' },
     gif:     { icon: 'gif_box',      title: 'GIF',      panelTitle: 'Import GIF',     intro: 'Drop an animated GIF. Frames are extracted, cropped to circle, and sent as a looping badge animation.' },
     qr:      { icon: 'qr_code',      title: 'QR code',  panelTitle: 'QR code',        intro: 'Generate a circular QR with custom colors and dot styles. Scans straight off the badge.' },
+    pixel:   { icon: 'grid_on',      title: 'Pixel art', panelTitle: 'Pixel Lab',     intro: 'Draw pixel art frame by frame, then play it as a loop on the badge. Your drawing is saved in this browser.' },
+    arcade:  { icon: 'sports_esports', title: 'Arcade', panelTitle: 'Arcade',         intro: 'Play Snake, Pong, Breakout, Flappy or Meteor Dodge, then record six seconds of play and send it to the badge.' },
   }
   let selectedFile: File | null = $state(null)
   let selectedFiles: File[] = $state([])
@@ -563,7 +574,8 @@
    */
   async function buildPatternAvi(pat: PatternDef): Promise<{ avi: Uint8Array; label: string; fits: boolean }> {
     const out = getOutputFrameSize()
-    const cacheKey = patternCacheKey(pat.id, patternFrameCount, patternFps, out.width, out.height)
+    // Live clocks show the time at generation, so they expire with the minute.
+    const cacheKey = patternCacheKey(pat.id, patternFrameCount, patternFps, out.width, out.height) + (pat.live ? `|${new Date().toISOString().slice(0, 16)}` : '')
     const cached = patternPreviewCache.get(cacheKey)
     if (cached) {
       // Re-insert to mark as most-recently-used.
@@ -595,6 +607,13 @@
 
   // ─── Connection ───
 
+  async function rememberedBadge(): Promise<BluetoothDevice | null> {
+    try {
+      const devices = await navigator.bluetooth.getDevices?.()
+      return devices?.find((d) => /^(E87|E01|E92|L8|X9|LED Badge)/.test(d.name ?? '')) ?? null
+    } catch { return null }
+  }
+
   async function connect(): Promise<void> {
     if (!hasWebBluetooth) {
       // HTTP fallback: the Python relay answers /api/status.
@@ -618,8 +637,18 @@
     }
     isConnecting = true
     try {
-      status = 'Requesting device…'
-      const nextConn = await connectE87(log)
+      // Reconnect to a badge Chrome already granted, without the picker.
+      // Falls back to the picker if it's asleep or out of range.
+      let nextConn: E87Connection | null = null
+      const remembered = await rememberedBadge()
+      if (remembered) {
+        status = `Reconnecting to ${remembered.name ?? 'badge'}…`
+        try { nextConn = await connectE87(log, remembered) } catch (e) { log(`Remembered badge unavailable: ${(e as Error).message}`) }
+      }
+      if (!nextConn) {
+        status = 'Requesting device…'
+        nextConn = await connectE87(log)
+      }
       batteryLevel = nextConn.batteryLevel
       batteryUpdatedAt = nextConn.batteryUpdatedAt
       batteryCharging = nextConn.batteryCharging
@@ -686,20 +715,10 @@
     status = 'Disconnected'
     progress = 0
     progressLabel = ''
-    smallFiles = []
-    browseEntries = []
-    selectedSmallFileKey = ''
-    smallFileReadText = ''
     log('Disconnected.')
   }
 
   // ─── Device utility actions ───
-
-  function getSelectedSmallFile(): E87SmallFileEntry | null {
-    if (!selectedSmallFileKey) return null
-    const key = selectedSmallFileKey
-    return smallFiles.find((f) => `${f.type}:${f.id}` === key) ?? null
-  }
 
   const deviceOps = createDeviceOps({
     log,
@@ -707,26 +726,16 @@
     setBusy: (b) => { isDeviceOpsBusy = b },
     setBattery: (lvl, at, chg) => { batteryLevel = lvl; batteryUpdatedAt = at; batteryCharging = chg },
     setBrightnessLevel: (n) => { brightnessLevel = n },
-    setSmallFiles: (files) => { smallFiles = files },
-    setSelectedSmallFileKey: (key) => { selectedSmallFileKey = key },
-    setSmallFileReadText: (text) => { smallFileReadText = text },
-    setBrowseEntries: (entries) => { browseEntries = entries },
     setRcspInfoText: (text) => { rcspInfoText = text },
     applyScreenInfo,
     getConnection: () => conn,
-    getSelectedSmallFile,
-    getSmallFiles: () => smallFiles,
   })
 
   const {
     refreshBattery,
     getBrightness,
     setBrightness,
-    listSmallFiles,
-    browseFiles,
     queryScreenInfo,
-    readSelectedSmallFile,
-    deleteSelectedSmallFile,
     getTargetFeatureMap,
     getTargetInfo,
     getSysInfo,
@@ -1127,7 +1136,7 @@
   })
 
   $effect(() => {
-    if (isWriting || isGeneratingPreview || uploadMode === 'pattern' || uploadMode === 'qr' || uploadMode === 'gif') return
+    if (isWriting || isGeneratingPreview || uploadMode === 'pattern' || uploadMode === 'qr' || uploadMode === 'gif' || uploadMode === 'pixel' || uploadMode === 'arcade') return
 
     if (uploadMode === 'image' && imagePreviewMode === 'preview' && imageLiveFrames.length > 0 && selectedFile) {
       const signature = [
@@ -1518,23 +1527,27 @@
 
   // ─── GIF mode result handler ───
 
-  async function handleGifResult(avi: Uint8Array, fps: number): Promise<void> {
+  async function handleGifResult(avi: Uint8Array, fps: number, kind = 'GIF'): Promise<void> {
     clearPreparedState()
     clearAviPreview()
 
     preparedPayload = avi
-    preparedPayloadLabel = `GIF @ ${fps} fps - ${formatBytes(avi.length)}`
+    preparedPayloadLabel = `${kind} @ ${fps} fps - ${formatBytes(avi.length)}`
     aviPreviewFps = fps
     aviPreviewFrames = await parseAviFrames(avi)
 
-    log(`GIF ready: ${aviPreviewFrames.length} frames @ ${fps} fps, ${formatBytes(avi.length)}`)
+    log(`${kind} ready: ${aviPreviewFrames.length} frames @ ${fps} fps, ${formatBytes(avi.length)}`)
     requestAnimationFrame(() => aviPlayer?.startPreview())
   }
 
   // ─── Get upload bytes ───
 
   async function getUploadBytes(): Promise<Uint8Array> {
-    const bytes = await getUploadBytesRaw()
+    let bytes = await getUploadBytesRaw()
+    if (overlayActive(overlay) && !libraryPayload) {
+      bytes = await applyOverlay(bytes, $state.snapshot(overlay), getOutputFrameSize(), log)
+      log(`Overlay applied: ${formatBytes(bytes.length)}`)
+    }
     // Strip browser-injected ICC/EXIF APP segments from JPEGs. No-op for
     // AVI (RIFF magic doesn't match FFD8). Fixes the on-device "first few
     // rows only" rendering bug caused by Jieli's MJPEG decoder choking on
@@ -1543,6 +1556,7 @@
   }
 
   async function getUploadBytesRaw(): Promise<Uint8Array> {
+    if (libraryPayload) return libraryPayload
     if (preparedPayload) {
       log(`Using prepared payload: ${formatBytes(preparedPayload.length)}`)
       return preparedPayload
@@ -1563,6 +1577,8 @@
       if (videoLiveFrames.length === 0) throw new Error('No video frames cached.')
       return previewBitmapsToAvi(videoLiveFrames, videoFps, getTransform('video'), log, getOutputFrameSize())
     }
+    if (uploadMode === 'pixel') throw new Error('Click Preview clip in Pixel Lab first.')
+    if (uploadMode === 'arcade') throw new Error('Record a game first.')
     if (uploadMode === 'gif') {
       if (!preparedPayload) throw new Error('No GIF processed. Drop a GIF file first.')
       return preparedPayload
@@ -1585,27 +1601,48 @@
   }
 
   function resolveUploadModeForDevice(): UploadMode {
+    if (libraryPayload) return isJpeg(libraryPayload) ? 'image' : 'video'
     if (uploadMode === 'qr') return 'image'
-    if (uploadMode === 'gif') return 'video'
+    if (uploadMode === 'gif' || uploadMode === 'pixel' || uploadMode === 'arcade') return 'video'
     if (uploadMode === 'text') return textEffect === 'static' ? 'image' : 'pattern'
     if (preparedIsStillImage) return 'image'
     return uploadMode
   }
 
-  async function downloadGenerated(): Promise<void> {
+  async function sendSaved(bytes: Uint8Array): Promise<void> {
+    libraryPayload = bytes
+    libraryOpen = false
+    try { await startUpload() } finally { libraryPayload = null }
+  }
+
+  async function saveToLibrary(): Promise<void> {
+    try {
+      const bytes = await getUploadBytes()
+      const name = `${MODE_HEADER[uploadMode].title} ${new Date().toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+      await saveItem(bytes, name)
+      libraryRefresh++
+      status = `Saved "${name}" to your designs.`
+    } catch (err) {
+      status = `Save failed: ${(err as Error).message}`
+    }
+    log(status)
+  }
+
+  async function downloadGenerated(format: 'native' | 'gif' | 'png' = 'native'): Promise<void> {
     try {
       const payload = await getUploadBytes()
       const deviceMode = resolveUploadModeForDevice()
-      const ext = deviceMode === 'image' ? 'jpg' : 'avi'
-      const mime = deviceMode === 'image' ? 'image/jpeg' : 'video/x-msvideo'
-      const blob = makeBlob(payload, mime)
+      let ext = deviceMode === 'image' ? 'jpg' : 'avi'
+      let blob = makeBlob(payload, deviceMode === 'image' ? 'image/jpeg' : 'video/x-msvideo')
+      if (format === 'gif') { ext = 'gif'; blob = makeBlob(await payloadToGif(payload), 'image/gif') }
+      if (format === 'png') { ext = 'png'; blob = await payloadToPng(payload) }
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
       link.download = `badge-${uploadMode}-${Date.now()}.${ext}`
       link.click()
       URL.revokeObjectURL(url)
-      log(`Downloaded generated ${ext.toUpperCase()} (${formatBytes(payload.length)})`)
+      log(`Downloaded ${ext.toUpperCase()} (${formatBytes(blob.size)})`)
     } catch (err) {
       log(`Download failed: ${(err as Error).message}`)
     }
@@ -1774,27 +1811,27 @@
         return
       }
     }
-    if (uploadMode === 'image' && !selectedFile && !preparedPayload) {
+    if (!libraryPayload && uploadMode === 'image' && !selectedFile && !preparedPayload) {
       status = 'Select an image.'
       return
     }
-    if (uploadMode === 'images' && selectedFiles.length === 0) {
+    if (!libraryPayload && uploadMode === 'images' && selectedFiles.length === 0) {
       status = 'Select images for the sequence.'
       return
     }
-    if (uploadMode === 'video' && !selectedFile) {
+    if (!libraryPayload && uploadMode === 'video' && !selectedFile) {
       status = 'Select a video file.'
       return
     }
-    if (uploadMode === 'pattern' && !selectedPattern) {
+    if (!libraryPayload && uploadMode === 'pattern' && !selectedPattern) {
       status = 'Select a pattern.'
       return
     }
-    if (uploadMode === 'qr' && !qrUrl.trim()) {
+    if (!libraryPayload && uploadMode === 'qr' && !qrUrl.trim()) {
       status = 'Enter a URL for QR mode.'
       return
     }
-    if (uploadMode === 'text' && !text.trim()) {
+    if (!libraryPayload && uploadMode === 'text' && !text.trim()) {
       status = 'Type some text first.'
       return
     }
@@ -1988,7 +2025,7 @@
           size={18}
           class={(conn?.server?.connected || httpConn) ? 'text-primary' : badgeOnline ? 'text-tertiary' : 'text-on-surface-variant'}
         />
-        <span class="text-label-md tabular-nums">
+        <span class="text-label-md tabular-nums sr-only sm:not-sr-only">
           {(conn?.server?.connected || httpConn) ? 'Live' : badgeOnline ? 'Online' : hasWebBluetooth ? 'Idle' : 'Asleep'}
         </span>
         <span class="w-2 h-2 rounded-full {(conn?.server?.connected || httpConn) ? 'bg-primary shadow-[0_0_8px_var(--md-sys-color-primary)]' : badgeOnline ? 'bg-tertiary shadow-[0_0_8px_var(--md-sys-color-tertiary)] animate-pulse' : 'bg-outline'}"></span>
@@ -2084,12 +2121,17 @@
           {/if}
         </div>
       {/if}
+      <M3IconButton icon="collections_bookmark" ariaLabel="Saved designs" onclick={() => libraryOpen = true} />
+      {#if hasWebBluetooth}
+        <M3IconButton icon="sd_storage" ariaLabel="My badge: files and clock" disabled={!conn?.server?.connected} onclick={() => badgeOpen = true} />
+      {/if}
       {#if (conn?.server?.connected || httpConn)}
         <M3IconButton icon="link_off" ariaLabel="Disconnect" disabled={isWriting} onclick={disconnect} />
       {:else}
         <M3IconButton icon={isConnecting ? 'autorenew' : 'link'} ariaLabel={isConnecting ? 'Connecting' : 'Connect'} disabled={isConnecting || isWriting} onclick={connect} variant="filled" />
       {/if}
       <M3IconButton
+        class="hidden sm:inline-flex"
         icon={colorSchemeIcon}
         ariaLabel={colorSchemeLabel}
         onclick={onThemeClick}
@@ -2350,15 +2392,15 @@
                       {/snippet}
                     </PreviewSurface>
                   {/if}
-                {:else if uploadMode === 'gif'}
+                {:else if uploadMode === 'gif' || uploadMode === 'pixel' || uploadMode === 'arcade'}
                   {#if aviPreviewFrames.length > 0}
-                    <AviPlayer bind:this={aviPlayer} frames={aviPreviewFrames} fps={aviPreviewFps} label="GIF preview" />
+                    <AviPlayer bind:this={aviPlayer} frames={aviPreviewFrames} fps={aviPreviewFps} label="{uploadMode === 'gif' ? 'GIF' : uploadMode === 'pixel' ? 'Pixel art' : 'Game recording'} preview" />
                   {:else}
                     <PreviewSurface size={260} quiet empty busy={gifBusy}>
                       {#snippet empty_()}
                         <div class="flex flex-col items-center gap-1.5 text-on-surface-variant">
-                          <span class="material-symbols-outlined text-[40px] opacity-70">gif_box</span>
-                          <span class="text-label-md font-medium">Drop a GIF to preview</span>
+                          <span class="material-symbols-outlined text-[40px] opacity-70">{uploadMode === 'gif' ? 'gif_box' : uploadMode === 'pixel' ? 'grid_on' : 'sports_esports'}</span>
+                          <span class="text-label-md font-medium">{uploadMode === 'gif' ? 'Drop a GIF to preview' : uploadMode === 'pixel' ? 'Draw, then click Preview clip' : 'Record a game to preview'}</span>
                         </div>
                       {/snippet}
                     </PreviewSurface>
@@ -2428,7 +2470,12 @@
                 {#if isWriting}
                   <M3Button variant="tonal" size="lg" icon="stop_circle" onclick={cancelWrite} class="w-full">Cancel</M3Button>
                 {:else}
-                  <M3Button variant="text" size="lg" icon="download" disabled={isWriting} onclick={downloadGenerated} class="w-full">Download AVI</M3Button>
+                  <div class="flex flex-wrap justify-center gap-1 w-full">
+                    <M3Button variant="text" size="sm" icon="download" onclick={() => downloadGenerated()}>{resolveUploadModeForDevice() === 'image' ? 'JPG' : 'AVI'}</M3Button>
+                    <M3Button variant="text" size="sm" icon="gif" onclick={() => downloadGenerated('gif')}>GIF</M3Button>
+                    <M3Button variant="text" size="sm" icon="image" onclick={() => downloadGenerated('png')}>PNG</M3Button>
+                    <M3Button variant="text" size="sm" icon="bookmark_add" onclick={saveToLibrary}>Save</M3Button>
+                  </div>
                 {/if}
               </div>
 
@@ -2543,6 +2590,16 @@
                     onResult={handleGifResult}
                   />
                 {/if}
+              {:else if uploadMode === 'pixel'}
+                {#if lazyModes.pixel}
+                  {@const PixelMode = lazyModes.pixel}
+                  <PixelMode {isWriting} bind:busy={gifBusy} onResult={(avi: Uint8Array, fps: number) => handleGifResult(avi, fps, 'Pixel art')} />
+                {/if}
+              {:else if uploadMode === 'arcade'}
+                {#if lazyModes.arcade}
+                  {@const ArcadeMode = lazyModes.arcade}
+                  <ArcadeMode {isWriting} bind:busy={gifBusy} onResult={(avi: Uint8Array, fps: number) => handleGifResult(avi, fps, 'Game recording')} />
+                {/if}
               {:else if uploadMode === 'qr'}
                 {#if lazyModes.qr}
                   {@const QrMode = lazyModes.qr}
@@ -2570,9 +2627,30 @@
             </div>
           </div>
           </M3Card>
+
+          <M3Card variant="filled" class="!rounded-2xl p-4 sm:p-5 min-w-0">
+            <details>
+              <summary class="cursor-pointer text-title-lg text-on-surface font-semibold flex items-center gap-2">
+                <span class="material-symbols-outlined text-primary" aria-hidden="true">add_reaction</span>
+                Stickers, frame &amp; caption
+                {#if overlayActive(overlay)}<span class="text-label-md text-primary font-normal">On</span>{/if}
+              </summary>
+              <div class="pt-4">
+                <OverlayPanel bind:overlay getBase={getUploadBytesRaw} outSize={getOutputFrameSize} {log} disabled={isWriting} />
+              </div>
+            </details>
+          </M3Card>
         </div>
 
         <!-- ═══ M3 Help dialog ═══ -->
+        <M3Dialog bind:open={badgeOpen} headline="My badge">
+          <BadgeManager conn={conn?.server?.connected ? conn : null} run={deviceOps.run} {log} setStatus={(s) => { status = s }} disabled={isWriting} />
+        </M3Dialog>
+
+        <M3Dialog bind:open={libraryOpen} headline="Saved designs">
+          <LibraryPanel onSend={sendSaved} canSend={!!(conn?.server?.connected || httpConn) && !isWriting} refreshKey={libraryRefresh} />
+        </M3Dialog>
+
         <M3Dialog bind:open={helpOpen} headline="Help & troubleshooting">
           <div class="flex flex-col gap-3">
             <div class="flex flex-wrap gap-2">
@@ -2707,6 +2785,18 @@
             >
               <span class="material-symbols-outlined text-[14px] leading-none">bluetooth</span>
               <span>@hybridherbst</span>
+            </a>
+            <span aria-hidden="true">·</span>
+            <span>Studio features from</span>
+            <a
+              href="https://github.com/martinferreiraHCA/Badge"
+              target="_blank"
+              rel="noopener"
+              class="footer-credit"
+              aria-label="Badge Studio by martinferreiraHCA on GitHub"
+            >
+              <span class="material-symbols-outlined text-[14px] leading-none">palette</span>
+              <span>Badge Studio</span>
             </a>
           </p>
           <p class="m-0 text-label-sm text-on-surface-variant/70 italic footer-tagline-extra">
