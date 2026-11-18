@@ -52,7 +52,7 @@ export type E87Frame = {
   body: Uint8Array
 }
 
-export type UploadMode = 'image' | 'images' | 'video' | 'pattern' | 'qr' | 'text' | 'gif' | 'pixel'
+export type UploadMode = 'image' | 'images' | 'video' | 'pattern' | 'qr' | 'text' | 'gif' | 'pixel' | 'arcade'
 export type E87Language = 'zh-CN' | 'en'
 
 const E87_LANGUAGE_CODE: Record<E87Language, number> = {
