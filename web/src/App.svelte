@@ -2349,8 +2349,12 @@
     </div>
 
     <!-- ═══ Main canvas ═══ -->
-    <main class="flex-1 overflow-y-auto p-4 md:p-5 lg:px-6 lg:py-4 pb-[calc(env(safe-area-inset-bottom)+88px)] lg:pb-4 bg-surface flex justify-center">
-      <div class="w-full max-w-[1280px] flex flex-col gap-3">
+    <main class="flex-1 overflow-y-auto p-4 md:p-5 lg:px-6 lg:py-4 bg-surface flex justify-center">
+      <!-- The room for the phone's bottom bar sits on this wrapper, which grows
+           with its content (self-start) but still fills the screen (min-h-full).
+           Stretched to <main>'s height, the content overflowed it and that room
+           ended up mid-page, so the credits sat under the bar. -->
+      <div class="w-full max-w-[1280px] self-start min-h-full flex flex-col gap-3 pb-[calc(env(safe-area-inset-bottom)+88px)] lg:pb-0">
         <!-- Page header. Compact-height viewports (≤820px) hide the intro
              paragraph because it pushes the bottom row out of the fold. -->
         <header class="flex flex-col gap-1 page-header">
@@ -3153,18 +3157,21 @@
      viewport once the OS chrome eats its share. The settings panels
      are the priority - everything else (intro text, log card, footer)
      gets compressed or hidden so the primary controls stay above the
-     fold and the user doesn't have to scroll inside <main>. */
-  @media (max-height: 860px) {
+     fold and the user doesn't have to scroll inside <main>.
+     Laptop-wide screens only: a phone's browser is often under 860px tall
+     too, and there these rules took away the room for the bottom bar and
+     hid the credits. Phones scroll anyway. */
+  @media (min-width: 1024px) and (max-height: 860px) {
     :global(.page-intro) { display: none; }
     :global(.site-footer) { padding-top: 2px; padding-bottom: 2px; gap: 4px; font-size: 0.7rem; }
     :global(.site-footer a) { min-height: 22px; padding-top: 0; padding-bottom: 0; padding-left: 8px; padding-right: 8px; }
     :global(.site-footer .footer-tagline-extra) { display: none; }
     :global(main) { padding-top: 10px !important; padding-bottom: 8px !important; }
   }
-  @media (max-height: 800px) {
+  @media (min-width: 1024px) and (max-height: 800px) {
     :global(.activity-log-card) { display: none; }
   }
-  @media (max-height: 740px) {
+  @media (min-width: 1024px) and (max-height: 740px) {
     :global(.page-header h1) { font-size: 1.5rem; }
     :global(.site-footer) { display: none; }
   }
